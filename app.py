@@ -1,6 +1,7 @@
 # Standard library and third-party imports needed for numerics, plotting, the
 # web UI, and the Claude API.
 import os
+import json
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -28,6 +29,21 @@ st.markdown("""
     [data-testid="stMetricValue"] { font-size: 1.5rem; }
     [data-testid="stMetricLabel"] p { font-size: 1.25rem; }
 </style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Google Analytics 4
+# ---------------------------------------------------------------------------
+GA4_ID = "G-BH1W66432Q"
+st.markdown(f"""
+<!-- Google Analytics 4 -->
+<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){{dataLayer.push(arguments);}}
+  gtag('js', new Date());
+  gtag('config', '{GA4_ID}');
+</script>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
@@ -204,6 +220,13 @@ if "wl_window"  not in st.session_state:
     st.session_state.wl_window  = 1.0
 if "wl_level"   not in st.session_state:
     st.session_state.wl_level   = 0.5
+if "ga4_prev_seq"   not in st.session_state:
+    st.session_state.ga4_prev_seq   = None
+if "ga4_prev_slice" not in st.session_state:
+    st.session_state.ga4_prev_slice = (None, None, None)
+
+# Events queued during sidebar rendering and fired once in the main area.
+_ga4_events = []
 
 # ---------------------------------------------------------------------------
 # Sidebar — parameters
@@ -215,6 +238,10 @@ with st.sidebar:
     st.markdown("**Sequence**")
     seq = st.radio("", ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI"],
                    horizontal=True)
+
+    if st.session_state.ga4_prev_seq is not None and seq != st.session_state.ga4_prev_seq:
+        _ga4_events.append(("sequence_change", {"sequence": seq}))
+    st.session_state.ga4_prev_seq = seq
 
     is_3d = (seq == "MPRAGE")
     dim_label = "3D" if is_3d else "2D"
@@ -357,6 +384,23 @@ with st.sidebar:
     x_pos = st.slider("X  (Sagittal)", 0, 361, 181, 1)
     y_pos = st.slider("Y  (Coronal)",  0, 433, 217, 1)
     z_pos = st.slider("Z  (Axial)",    0, 361, 181, 1)
+
+    _cur_slice = (x_pos, y_pos, z_pos)
+    if st.session_state.ga4_prev_slice != (None, None, None) and _cur_slice != st.session_state.ga4_prev_slice:
+        _ga4_events.append(("slice_position_change", {"x": x_pos, "y": y_pos, "z": z_pos}))
+    st.session_state.ga4_prev_slice = _cur_slice
+
+# ---------------------------------------------------------------------------
+# Fire any queued GA4 events
+# ---------------------------------------------------------------------------
+# st.components.v1.html() runs in a sandboxed iframe on the same origin, so
+# window.parent.gtag() reaches the GA4 instance loaded in the parent page.
+if _ga4_events:
+    _js = "\n".join(
+        f"window.parent.gtag('event', {json.dumps(name)}, {json.dumps(params)});"
+        for name, params in _ga4_events
+    )
+    st.components.v1.html(f"<script>{_js}</script>", height=0)
 
 # ---------------------------------------------------------------------------
 # Compute signals and SNR
@@ -741,6 +785,11 @@ with col_status:
     status = st.empty()
 
 if clicked:
+    st.components.v1.html(
+        f"<script>window.parent.gtag('event', 'explain_contrast_click', "
+        f"{json.dumps({'sequence': seq})});</script>",
+        height=0
+    )
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         status.error("ANTHROPIC_API_KEY environment variable not set.")
