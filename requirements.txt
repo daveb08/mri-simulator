@@ -1,0 +1,6 @@
+streamlit==1.55.0
+numpy==2.4.2
+matplotlib==3.10.8
+anthropic==0.84.0
+scipy==1.17.1
+scikit-image==0.26.0
