@@ -307,7 +307,7 @@ with st.sidebar:
         FA  = 90
 
     elif seq == "GRE":
-        TE  = st.slider("TE (ms)",       2,  50,   5, 1)
+        TE  = st.slider("TE (ms)",       2, 100,   5, 1)
         FA  = st.slider("Flip Angle (°)",1,  90,  30, 1)
         ETL = 1
 
@@ -604,24 +604,22 @@ with col_bars:
     fig_sig, ax_sig = plt.subplots(figsize=(2.5, 1.5), facecolor="#1e1e1e")
     sig_vals = [signals[t] for t in names]
     bars = ax_sig.bar(names, sig_vals, color=colors, width=0.5)
-    ax_sig.set_title("Signal", fontsize=9)
+    ax_sig.set_title(f"Signal (Noise floor = {noise_floor:.2f})", fontsize=9)
 
     # noise_floor already computed in Step 2 — use directly.
     _sig_max    = max(max(sig_vals), noise_floor) if sig_vals else 1.0
-    _sig_offset = _sig_max * 0.05
+    _sig_offset = _sig_max * 0.025  # vertical offset for bar labels, scaled to max of bars and noise floor
     ax_sig.set_ylim(0, _sig_max * 1.25)
     for bar, val in zip(bars, sig_vals):
         ax_sig.text(bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + _sig_offset,
-                    f"{val:.2f}", ha="center", color="white", fontsize=7)
+                    f"{val:.2f}", ha="center", color="white", fontsize=5)
 
-    # Draw noise floor as a horizontal dashed reference line with value label.
+    # Draw noise floor as a horizontal dashed reference line; label via legend.
     ax_sig.axhline(noise_floor, color="#FF6B6B", linewidth=1.0,
                    linestyle="--", alpha=0.85)
-    ax_sig.text(len(names) - 0.5, noise_floor + _sig_offset * 0.6,
-                f"Noise={noise_floor:.3f}\n(system floor,\nall tissues)",
-                ha="right", va="bottom", color="#FF6B6B", fontsize=4.5,
-                linespacing=1.3)
+    ax_sig.legend(fontsize=5, loc="upper right",
+                  facecolor="#2e2e2e", edgecolor="none", labelcolor="white")
 
     style_ax(ax_sig)
     st.pyplot(fig_sig, use_container_width=True)
@@ -634,7 +632,7 @@ with col_bars:
     for bar, val in zip(bars2, snr_vals):
         ax_snr.text(bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.2,
-                    f"{val:.2f}", ha="center", color="white", fontsize=7)
+                    f"{val:.2f}", ha="center", color="white", fontsize=5)
     style_ax(ax_snr)
     st.pyplot(fig_snr, use_container_width=True)
     plt.close(fig_snr)
@@ -729,6 +727,7 @@ with col_curves:
                 s = p["PD"] * (1 - np.exp(-tr_range/p["T1"])) * np.exp(-TE/p["T2"])
             ax_t1.plot(tr_range, s, color=p["color"], label=t, linewidth=1.5)
         ax_t1.axvline(TR, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TR")
+        ax_t1.set_xlim(0, 6000)
         ax_t1.set_title("T1 Recovery", fontsize=9)
         ax_t1.set_xlabel("TR (ms)", fontsize=8)
 
@@ -754,12 +753,13 @@ with col_curves:
         ax_t2.set_xlabel("TR (ms)", fontsize=8)
 
     elif seq == "EPI":
-        te_range_epi = np.linspace(1, 150, 500)
+        te_range_epi = np.linspace(1, 90, 500)
         for t in brain_tissues:
             p = TISSUES[t]
             s = p["PD"] * (1 - np.exp(-TR/p["T1"])) * np.exp(-te_range_epi/p["T2s"])
             ax_t2.plot(te_range_epi, s, color=p["color"], label=t, linewidth=1.5)
-            ax_t2.axvline(p["T2s"], color=p["color"], linestyle=":", linewidth=1, alpha=0.6)
+            if p["T2s"] <= 90:
+                ax_t2.axvline(p["T2s"], color=p["color"], linestyle=":", linewidth=1, alpha=0.6)
         ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
         ax_t2.set_title("T2* Decay (EPI)", fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
@@ -808,6 +808,8 @@ with col_curves:
                 s = p["PD"] * (1 - np.exp(-TR/p["T1"])) * np.exp(-te_range/p[t2_key])
             ax_t2.plot(te_range, s, color=p["color"], label=t, linewidth=1.5)
         ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
+        if seq == "GRE":
+            ax_t2.set_xlim(0, 150)
         ax_t2.set_title(t2_title, fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
 
