@@ -62,6 +62,34 @@ TISSUES = {
 SNR_SCALE = 200.0
 
 # ---------------------------------------------------------------------------
+# Reference constants for the three-step Signal / Noise / SNR architecture
+# ---------------------------------------------------------------------------
+# Step 1 — Signal = physics_signal(tissue, seq) × voxel_vol / ref_voxel
+#   ref_voxel is acquisition-type-specific (1 mm for 3D, 5 mm for 2D) so that
+#   signals sit at baseline at default settings for both modes.
+_ref_px        = 240.0 / 256.0          # in-plane pixel size at defaults
+REF_VOXEL_VOL  = _ref_px ** 2 * 5.0    # 2-D reference voxel ≈ 4.394 mm³
+
+# Step 2 — Noise = NOISE_REF × sqrt(BW / BW_REF) / sqrt(NEX)
+#   Noise depends ONLY on BW and NEX — never on FOV, matrix, slice, Npartitions,
+#   TR, TE, TI, or flip angle.
+#   NOISE_REF is calibrated so that at 2-D default settings SNR magnitudes
+#   match the pre-refactor output: NOISE_REF = sqrt(BW_REF)/(REF_VOXEL_VOL×SNR_SCALE)
+BW_REF    = 200.0                                       # default bandwidth Hz/px
+NEX_REF   = 1.0                                         # default NEX
+NOISE_REF = np.sqrt(BW_REF) / (REF_VOXEL_VOL * SNR_SCALE)  # ≈ 0.01609
+
+# For 3D MPRAGE, Npartitions is a voxel-volume parameter (equivalent to slice
+# thickness in 2D), not a signal-averaging parameter.  A fixed slab thickness
+# is divided by Npartitions to give the partition thickness used in voxel_vol.
+# Increasing Npartitions → thinner partitions → smaller voxel → lower Signal
+# and SNR, but Noise is completely unaffected.
+MPRAGE_SLAB_MM       = 176.0   # fixed slab coverage (mm) — default 176 × 1 mm
+MPRAGE_NPART_DEFAULT = 176     # partition count at default slider position
+
+# Step 3 — SNR = Signal / Noise  (computed directly, no circular dependencies)
+
+# ---------------------------------------------------------------------------
 # Physics functions
 # ---------------------------------------------------------------------------
 # One signal equation per MRI sequence, plus helper functions for SNR, scan
@@ -303,7 +331,7 @@ with st.sidebar:
 
     elif seq == "DIR":
         TI1 = st.slider("TI1 (ms)", 2000, 5000, 3400, 50)
-        TI2 = st.slider("TI2 (ms)",  100, 1500,  800, 50)
+        TI2 = st.slider("TI2 (ms)",  100, 2500,  800, 50)
         TE  = st.slider("TE eff. (ms)", 10, 100,  25,  5)
         ETL = st.slider("ETL",           1,  32,   8,  1)
         FA  = 90
@@ -317,7 +345,7 @@ with st.sidebar:
         st.caption(f"Diffusion attenuation: exp(−b×ADC)  |  b={b} s/mm²")
 
     elif seq == "MPRAGE":
-        TI  = st.slider("TI (ms)",        700, 1200,  900, 10)
+        TI  = st.slider("TI (ms)",        200, 2500,  900, 10)
         TE  = st.slider("TE (ms)",          2,    6,    3,  1)
         FA  = st.slider("Flip Angle (°)",   5,   15,    9,  1)
         ETL = 1
@@ -357,7 +385,7 @@ with st.sidebar:
     # Compute optimal W/L before sliders are instantiated (session state must
     # be updated before keyed widgets render). Track a signature of all
     # signal-affecting parameters; recompute only when something changes.
-    _params_sig = (seq, TR, TE, FA, TI, TI1, TI2, b, fat_sat)
+    _params_sig = (seq, TR, TE, FA, TI, TI1, TI2, b, fat_sat, FOV, matrix, slice_mm)
     if _params_sig != st.session_state.params_sig:
         _sigs = []
         for _t in ["WM", "GM", "CSF"]:
@@ -416,9 +444,11 @@ if _ga4_events:
 # ---------------------------------------------------------------------------
 # Compute signals and SNR
 # ---------------------------------------------------------------------------
-# Runs the appropriate signal equation for every tissue using the current
-# sidebar parameters, then converts each signal to SNR and CNR values.
-signals, snrs = {}, {}
+# Three-step Signal / Noise / SNR calculation — no circular dependencies
+# ---------------------------------------------------------------------------
+
+# STEP 1 — Physics signals (pure tissue contrast, 0–1 scale)
+base_signals = {}
 for tissue, props in TISSUES.items():
     is_fat = (tissue == "Fat")
     if seq == "FSE":
@@ -448,8 +478,34 @@ for tissue, props in TISSUES.items():
             S *= 0.05
     else:  # EPI
         S = epi_signal(TR, TE, props["T1"], props["T2s"], props["PD"])
-    signals[tissue] = S
-    snrs[tissue]    = calc_snr(S, FOV, matrix, slice_mm, NEX, BW, Npartitions)
+    base_signals[tissue] = S
+
+# STEP 1 (cont.) — Multiply by voxel-volume scale factor.
+# For 3D (MPRAGE): partition_thickness = slab / Npartitions, so more partitions
+# → thinner slices → smaller voxel → lower Signal.  Npartitions is purely a
+# voxel-volume parameter here, exactly analogous to slice_mm in 2D.
+# For 2D: voxel thickness = slice_mm as before.
+# Reference voxel uses the default partition thickness (1 mm) for 3D and the
+# default slice (5 mm) for 2D, so signals sit at baseline at default settings.
+if is_3d:
+    _slice_for_vol = MPRAGE_SLAB_MM / Npartitions          # e.g. 176/176 = 1 mm at default
+    _ref_slice     = MPRAGE_SLAB_MM / MPRAGE_NPART_DEFAULT  # = 1.0 mm
+else:
+    _slice_for_vol = slice_mm
+    _ref_slice     = 5.0
+_ref_vox   = (240.0 / 256.0) ** 2 * _ref_slice
+voxel_vol  = (FOV / matrix) ** 2 * _slice_for_vol
+_vol_scale = voxel_vol / _ref_vox
+signals    = {t: round(base_signals[t] * _vol_scale, 2) for t in base_signals}
+
+# STEP 2 — System noise floor.
+# Depends ONLY on BW and NEX — Npartitions has no influence whatsoever.
+# Never changes with FOV, matrix, slice, Npartitions, TR, TE, TI, or flip angle.
+noise_floor = round(NOISE_REF * np.sqrt(BW / BW_REF) / np.sqrt(NEX / NEX_REF), 2)
+
+# STEP 3 — SNR = Signal / Noise, derived directly with no other dependencies.
+# signals and noise_floor are pre-rounded to 2 dp so displayed values are exact inputs.
+snrs = {t: signals[t] / noise_floor if noise_floor > 0 else 0.0 for t in signals}
 
 names    = list(TISSUES.keys())
 colors   = [TISSUES[t]["color"] for t in names]
@@ -466,8 +522,14 @@ cnr_gm_csf = abs(snrs["GM"] - snrs["CSF"])
 # ---------------------------------------------------------------------------
 # Precompute the signal lookup table and noise level shared by all three plane
 # renders. Each plane fetches its slice and builds its own image in the loop below.
-sig_lookup = np.array([0.0, signals["WM"], signals["GM"], signals["CSF"]])
-noise_std  = (signals["WM"] / snrs["WM"]) if snrs["WM"] > 0 else 0.0
+# Phantom image uses base_signals (unscaled) so the W/L, which is computed in
+# base-signal space (0–1), correctly maps to image pixel values.
+# noise_std derived from base_signals gives SNR ∝ voxel_vol × sqrt(NEX)/sqrt(BW),
+# so the phantom visibly gets less noisy as voxel size or NEX increases.
+sig_lookup = np.array([0.0, base_signals["WM"], base_signals["GM"], base_signals["CSF"]])
+# Phantom noise in base-signal space: noise_floor scaled back to the base-signal
+# reference (undo _vol_scale) so it is consistent with the 0–1 pixel values.
+noise_std  = noise_floor / _vol_scale if _vol_scale > 0 else 0.0
 
 vmin = wl_level - wl_window / 2
 vmax = wl_level + wl_window / 2
@@ -543,11 +605,24 @@ with col_bars:
     sig_vals = [signals[t] for t in names]
     bars = ax_sig.bar(names, sig_vals, color=colors, width=0.5)
     ax_sig.set_title("Signal", fontsize=9)
-    ax_sig.set_ylim(0, 1.15)
+
+    # noise_floor already computed in Step 2 — use directly.
+    _sig_max    = max(max(sig_vals), noise_floor) if sig_vals else 1.0
+    _sig_offset = _sig_max * 0.05
+    ax_sig.set_ylim(0, _sig_max * 1.25)
     for bar, val in zip(bars, sig_vals):
         ax_sig.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.02,
+                    bar.get_height() + _sig_offset,
                     f"{val:.2f}", ha="center", color="white", fontsize=7)
+
+    # Draw noise floor as a horizontal dashed reference line with value label.
+    ax_sig.axhline(noise_floor, color="#FF6B6B", linewidth=1.0,
+                   linestyle="--", alpha=0.85)
+    ax_sig.text(len(names) - 0.5, noise_floor + _sig_offset * 0.6,
+                f"Noise={noise_floor:.3f}\n(system floor,\nall tissues)",
+                ha="right", va="bottom", color="#FF6B6B", fontsize=4.5,
+                linespacing=1.3)
+
     style_ax(ax_sig)
     st.pyplot(fig_sig, use_container_width=True)
     plt.close(fig_sig)
@@ -559,7 +634,7 @@ with col_bars:
     for bar, val in zip(bars2, snr_vals):
         ax_snr.text(bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.2,
-                    f"{val:.1f}", ha="center", color="white", fontsize=7)
+                    f"{val:.2f}", ha="center", color="white", fontsize=7)
     style_ax(ax_snr)
     st.pyplot(fig_snr, use_container_width=True)
     plt.close(fig_snr)
