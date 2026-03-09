@@ -124,7 +124,10 @@ def epi_signal(TR, TE, T1, T2s, PD):
     return PD * (1 - np.exp(-TR / T1)) * np.exp(-TE / T2s)
 
 def csf_null_ti(TR, T1):
-    return T1 * np.log((1 + np.exp(-TR / T1)) / 2)
+    # TI that nulls a tissue with given T1 in an IR sequence.
+    # Derived from 1 - 2*exp(-TI/T1) + exp(-TR/T1) = 0  →  TI = T1*ln(2/(1+exp(-TR/T1)))
+    # Approaches T1*ln(2) ≈ 0.693*T1 when TR >> T1.
+    return T1 * np.log(2.0 / (1.0 + np.exp(-TR / T1)))
 
 def ernst_angle(TR, T1):
     return np.degrees(np.arccos(np.exp(-TR / T1)))
@@ -582,9 +585,9 @@ with col_curves:
             p = TISSUES[t]
             s = p["PD"] * np.abs(1 - 2*np.exp(-ti_range_plot/p["T1"]) + np.exp(-TR/p["T1"])) * np.exp(-TE/p["T2"])
             ax_t1.plot(ti_range_plot, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t1.axvline(TI, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t1.axvline(TI, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TI")
         ti_null = csf_null_ti(TR, TISSUES[null_tissue]["T1"])
-        ax_t1.axvline(ti_null, color=TISSUES[null_tissue]["color"], linestyle=":", linewidth=1, alpha=0.8)
+        ax_t1.axvline(ti_null, color=TISSUES[null_tissue]["color"], linestyle=":", linewidth=1, alpha=0.8, label=f"{null_tissue} null TI")
         ax_t1.set_title(f"Signal vs TI ({seq})", fontsize=9)
         ax_t1.set_xlabel("TI (ms)", fontsize=8)
 
@@ -595,8 +598,8 @@ with col_curves:
             p = TISSUES[t]
             s = bssfp_signal(TR, fa_range, p["T1"], p["T2"], p["PD"])
             ax_t1.plot(fa_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t1.axvline(FA, color="white", linestyle="--", linewidth=1, alpha=0.6)
-        ax_t1.axvline(fa_opt_wm, color=TISSUES["WM"]["color"], linestyle=":", linewidth=1, alpha=0.8)
+        ax_t1.axvline(FA, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current FA")
+        ax_t1.axvline(fa_opt_wm, color=TISSUES["WM"]["color"], linestyle=":", linewidth=1, alpha=0.8, label="Opt FA (WM)")
         ax_t1.set_title("Signal vs Flip Angle (bSSFP)", fontsize=9)
         ax_t1.set_xlabel("FA (°)", fontsize=8)
 
@@ -607,9 +610,9 @@ with col_curves:
             p = TISSUES[t]
             s = p["PD"] * np.abs(1 - 2*np.exp(-ti2_range/p["T1"]) + 2*np.exp(-TI1/p["T1"]) - np.exp(-TR/p["T1"])) * np.exp(-TE/p["T2"])
             ax_t1.plot(ti2_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t1.axvline(TI2, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t1.axvline(TI2, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TI2")
         if wm_null:
-            ax_t1.axvline(wm_null, color=TISSUES["WM"]["color"], linestyle=":", linewidth=1, alpha=0.8)
+            ax_t1.axvline(wm_null, color=TISSUES["WM"]["color"], linestyle=":", linewidth=1, alpha=0.8, label="WM null TI2")
         ax_t1.set_title("Signal vs TI2 (DIR)", fontsize=9)
         ax_t1.set_xlabel("TI2 (ms)", fontsize=8)
 
@@ -620,7 +623,7 @@ with col_curves:
             s0 = p["PD"] * (1 - np.exp(-TR/p["T1"])) * np.exp(-TE/p["T2"])
             s  = s0 * np.exp(-b_range * p["ADC"])
             ax_t1.plot(b_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t1.axvline(b, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t1.axvline(b, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current b")
         ax_t1.set_title("Signal vs b-value (DWI)", fontsize=9)
         ax_t1.set_xlabel("b (s/mm²)", fontsize=8)
 
@@ -632,8 +635,8 @@ with col_curves:
             p = TISSUES[t]
             s = p["PD"] * np.abs(1 - 2*np.exp(-ti_range_plot/p["T1"]) + np.exp(-TR/p["T1"])) * np.sin(FA_r) * np.exp(-TE/p["T2s"])
             ax_t1.plot(ti_range_plot, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t1.axvline(TI, color="white", linestyle="--", linewidth=1, alpha=0.6)
-        ax_t1.axvline(csf_null, color=TISSUES["CSF"]["color"], linestyle=":", linewidth=1, alpha=0.8)
+        ax_t1.axvline(TI, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TI")
+        ax_t1.axvline(csf_null, color=TISSUES["CSF"]["color"], linestyle=":", linewidth=1, alpha=0.8, label="CSF null TI")
         ax_t1.set_title("Signal vs TI (MPRAGE)", fontsize=9)
         ax_t1.set_xlabel("TI (ms)", fontsize=8)
 
@@ -650,13 +653,13 @@ with col_curves:
             else:  # FSE
                 s = p["PD"] * (1 - np.exp(-tr_range/p["T1"])) * np.exp(-TE/p["T2"])
             ax_t1.plot(tr_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t1.axvline(TR, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t1.axvline(TR, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TR")
         ax_t1.set_title("T1 Recovery", fontsize=9)
         ax_t1.set_xlabel("TR (ms)", fontsize=8)
 
     ax_t1.set_ylabel("Signal", fontsize=8)
     ax_t1.set_ylim(bottom=0)
-    ax_t1.legend(fontsize=7, labelcolor="white", facecolor="#2b2b2b",
+    ax_t1.legend(fontsize=5, labelcolor="white", facecolor="#2b2b2b",
                  edgecolor="#555", loc="upper left")
     style_ax(ax_t1)
     st.pyplot(fig_t1, use_container_width=True)
@@ -671,7 +674,7 @@ with col_curves:
             p = TISSUES[t]
             s = bssfp_signal(tr_range_b, FA, p["T1"], p["T2"], p["PD"])
             ax_t2.plot(tr_range_b, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t2.axvline(TR, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t2.axvline(TR, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TR")
         ax_t2.set_title("Signal vs TR (bSSFP)", fontsize=9)
         ax_t2.set_xlabel("TR (ms)", fontsize=8)
 
@@ -682,7 +685,7 @@ with col_curves:
             s = p["PD"] * (1 - np.exp(-TR/p["T1"])) * np.exp(-te_range_epi/p["T2s"])
             ax_t2.plot(te_range_epi, s, color=p["color"], label=t, linewidth=1.5)
             ax_t2.axvline(p["T2s"], color=p["color"], linestyle=":", linewidth=1, alpha=0.6)
-        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
         ax_t2.set_title("T2* Decay (EPI)", fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
 
@@ -692,7 +695,7 @@ with col_curves:
             t1_factor = abs(1 - 2*np.exp(-TI2/p["T1"]) + 2*np.exp(-TI1/p["T1"]) - np.exp(-TR/p["T1"]))
             s         = p["PD"] * t1_factor * np.exp(-te_range/p["T2"])
             ax_t2.plot(te_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
         ax_t2.set_title("T2 Decay (DIR-weighted)", fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
 
@@ -701,7 +704,7 @@ with col_curves:
             p = TISSUES[t]
             s = p["PD"] * (1 - np.exp(-TR/p["T1"])) * np.exp(-te_range/p["T2"]) * np.exp(-b*p["ADC"])
             ax_t2.plot(te_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
         ax_t2.set_title("T2 Decay (DWI-weighted)", fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
 
@@ -713,7 +716,7 @@ with col_curves:
             t1_factor = abs(1 - 2*np.exp(-TI/p["T1"]) + np.exp(-TR/p["T1"])) * np.sin(FA_r)
             s         = p["PD"] * t1_factor * np.exp(-te_range_mprage/p["T2s"])
             ax_t2.plot(te_range_mprage, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
         ax_t2.set_title("T2* Decay (MPRAGE)", fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
 
@@ -729,13 +732,13 @@ with col_curves:
             else:
                 s = p["PD"] * (1 - np.exp(-TR/p["T1"])) * np.exp(-te_range/p[t2_key])
             ax_t2.plot(te_range, s, color=p["color"], label=t, linewidth=1.5)
-        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6)
+        ax_t2.axvline(TE, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TE")
         ax_t2.set_title(t2_title, fontsize=9)
         ax_t2.set_xlabel("TE (ms)", fontsize=8)
 
     ax_t2.set_ylabel("Signal", fontsize=8)
     ax_t2.set_ylim(bottom=0)
-    ax_t2.legend(fontsize=7, labelcolor="white", facecolor="#2b2b2b",
+    ax_t2.legend(fontsize=5, labelcolor="white", facecolor="#2b2b2b",
                  edgecolor="#555", loc="upper right")
     style_ax(ax_t2)
     st.pyplot(fig_t2, use_container_width=True)
