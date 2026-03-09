@@ -342,14 +342,6 @@ with st.sidebar:
     NEX     = st.slider("NEX",               1,   8,   1,  1)
     BW      = st.slider("Bandwidth (Hz/px)", 50, 500, 200, 10)
     fat_sat = st.checkbox("Fat Saturation")
-    if seq == "MPRAGE" and fat_sat:
-        st.caption(
-            "Note: chemical shift selective (CHESS) fat suppression is "
-            "uncommonly used with MPRAGE. Fat suppression alters the "
-            "inversion recovery preparation, potentially disrupting the "
-            "T1-null point optimised for CSF or WM. Fat signal in MPRAGE "
-            "is typically managed via the inversion pulse itself."
-        )
 
     # Compute optimal W/L before sliders are instantiated (session state must
     # be updated before keyed widgets render). Track a signature of all
@@ -433,16 +425,10 @@ for tissue, props in TISSUES.items():
             S *= 0.05
     elif seq == "DIR":
         S = dir_signal(TR, TI1, TI2, TE, props["T1"], props["T2"], props["PD"])
-        if fat_sat and is_fat:
-            S *= 0.05
     elif seq == "DWI":
         S = dwi_signal(TR, TE, b, props["T1"], props["T2"], props["PD"], props["ADC"])
-        if fat_sat and is_fat:
-            S *= 0.05
     elif seq == "MPRAGE":
         S = mprage_signal(TR, TI, TE, FA, props["T1"], props["T2s"], props["PD"])
-        if fat_sat and is_fat:
-            S *= 0.05
     else:  # EPI
         S = epi_signal(TR, TE, props["T1"], props["T2s"], props["PD"])
     signals[tissue] = S
