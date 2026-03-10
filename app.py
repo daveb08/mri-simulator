@@ -165,11 +165,16 @@ def calc_snr(signal, FOV, matrix, slice_mm, NEX, BW, Npartitions=1):
     voxel_vol = pixel_mm * pixel_mm * slice_mm
     return signal * voxel_vol * np.sqrt(NEX * Npartitions) / np.sqrt(BW) * SNR_SCALE
 
-def calc_scan_time(TR, matrix, ETL, NEX, seq, Npartitions=1):
+def calc_scan_time(TR, phase_matrix, ETL, NEX, seq, Npartitions=1):
     if seq == "GRE":
-        return TR * matrix * NEX / 1000.0
+        return TR * phase_matrix * NEX / 1000.0
+    elif seq == "MPRAGE":
+        # Scan time = TR_total × matrix_phase × NEX.
+        # Npartitions constrains minimum TR via the readout train duration
+        # but does NOT appear in the scan time formula.
+        return TR * phase_matrix * NEX / 1000.0
     else:
-        return TR * (matrix / ETL) * Npartitions * NEX / 1000.0
+        return TR * (phase_matrix / ETL) * Npartitions * NEX / 1000.0
 
 # ---------------------------------------------------------------------------
 # Brain phantom — BrainWeb with synthetic fallback
@@ -245,12 +250,16 @@ def style_ax(ax):
 # that affect signal intensity; when it changes, W/L is recomputed. When
 # only the W/L sliders themselves move, params_sig is unchanged and the
 # user's manual value is preserved.
-if "params_sig" not in st.session_state:
-    st.session_state.params_sig = None
-if "wl_window"  not in st.session_state:
-    st.session_state.wl_window  = 1.0
-if "wl_level"   not in st.session_state:
-    st.session_state.wl_level   = 0.5
+if "params_sig"    not in st.session_state:
+    st.session_state.params_sig    = None
+if "wl_window"     not in st.session_state:
+    st.session_state.wl_window     = 1.0
+if "wl_level"      not in st.session_state:
+    st.session_state.wl_level      = 0.5
+if "wl_opt_window" not in st.session_state:
+    st.session_state.wl_opt_window = 1.0
+if "wl_opt_level"  not in st.session_state:
+    st.session_state.wl_opt_level  = 0.5
 if "ga4_prev_seq"   not in st.session_state:
     st.session_state.ga4_prev_seq   = None
 if "ga4_prev_slice" not in st.session_state:
@@ -267,7 +276,7 @@ _ga4_events = []
 with st.sidebar:
     st.markdown("### MRI Parameters")
     st.markdown("**Sequence**")
-    seq = st.radio("", ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI"],
+    seq = st.radio("", ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI (single-shot)"],
                    horizontal=True)
 
     if st.session_state.ga4_prev_seq is not None and seq != st.session_state.ga4_prev_seq:
@@ -346,9 +355,10 @@ with st.sidebar:
 
     elif seq == "MPRAGE":
         TI  = st.slider("TI (ms)",        200, 2500,  900, 10)
-        TE  = st.slider("TE (ms)",          2,    6,    3,  1)
+        TE  = st.slider("TE (ms)",          2,    18,    3,  1)
         FA  = st.slider("Flip Angle (°)",   5,   15,    9,  1)
         ETL = 1
+        MPRAGE_TR_READOUT = 7  # ms — fixed gradient echo spacing within partition train
 
     else:  # EPI
         TE  = st.slider("TE (ms)", 15, 80, 30, 1)
@@ -356,12 +366,17 @@ with st.sidebar:
         ETL = 1
         st.caption(f"Optimal TE for BOLD ≈ T2* of GM = {TISSUES['GM']['T2s']} ms")
 
-    matrix = st.slider("Matrix (px)", 64, 512, 256, 32)
+    freq_matrix  = st.slider("Frequency Matrix (px)", 64, 512, 256, 32)
+    phase_matrix = st.slider("Phase Matrix (px)",     64, 512, 256, 32)
     if seq == "EPI":
-        ETL = matrix  # single-shot: one TR acquires full matrix
+        ETL = phase_matrix  # single-shot EPI: all phase encodes in one TR, so scan time = TR × NEX
 
-    FOV = st.slider("FOV (mm)", 180, 400, 240, 10)
-    st.caption(f"In-plane pixel size: {FOV / matrix:.2f} mm")
+    FOV_read  = st.slider("FOV Read (mm)",  180, 400, 240, 10)
+    FOV_phase = st.slider("FOV Phase (mm)", 180, 400, 240, 10)
+    st.caption(
+        f"Frequency pixel: {FOV_read / freq_matrix:.2f} mm  |  "
+        f"Phase pixel: {FOV_phase / phase_matrix:.2f} mm"
+    )
 
     if is_3d:
         Npartitions = st.slider("Partitions", 32, 256, 176, 8)
@@ -369,6 +384,21 @@ with st.sidebar:
     else:
         slice_mm    = st.slider("Slice (mm)", 1, 10, 5, 1)
         Npartitions = 1
+
+    if seq == "MPRAGE":
+        readout_train_ms = MPRAGE_TR_READOUT * Npartitions
+        st.caption(f"TR_readout: {MPRAGE_TR_READOUT} ms (fixed) — gradient echo spacing within partition train")
+        st.caption(f"Readout train duration: {MPRAGE_TR_READOUT} ms × {Npartitions} partitions = {readout_train_ms} ms")
+        if TR < TI + readout_train_ms:
+            st.markdown(
+                f":red[**⚠ Timing violation:** TR ({TR} ms) < TI ({TI} ms) + readout train "
+                f"({readout_train_ms} ms) = {TI + readout_train_ms} ms. "
+                f"Increase TR or decrease TI / Partitions.]"
+            )
+        st.caption(
+            "MPRAGE timing: inversion pulse → TI delay → partition encode readout train "
+            f"({readout_train_ms} ms) → remaining T1 recovery → next inversion pulse."
+        )
 
     NEX     = st.slider("NEX",               1,   8,   1,  1)
     BW      = st.slider("Bandwidth (Hz/px)", 50, 500, 200, 10)
@@ -385,7 +415,7 @@ with st.sidebar:
     # Compute optimal W/L before sliders are instantiated (session state must
     # be updated before keyed widgets render). Track a signature of all
     # signal-affecting parameters; recompute only when something changes.
-    _params_sig = (seq, TR, TE, FA, TI, TI1, TI2, b, fat_sat, FOV, matrix, slice_mm)
+    _params_sig = (seq, TR, TE, FA, TI, TI1, TI2, b, fat_sat, FOV_read, FOV_phase, freq_matrix, phase_matrix, slice_mm)
     if _params_sig != st.session_state.params_sig:
         _sigs = []
         for _t in ["WM", "GM", "CSF"]:
@@ -408,9 +438,31 @@ with st.sidebar:
                 _s = epi_signal(TR, TE, _p["T1"], _p["T2s"], _p["PD"])
             _sigs.append(_s)
         _arr = np.array(_sigs)
-        st.session_state.params_sig = _params_sig
-        st.session_state.wl_level   = float(np.clip(np.mean(_arr),       0.0,  1.0))
-        st.session_state.wl_window  = float(np.clip(2.0 * np.std(_arr),  0.01, 2.0))
+        _opt_w = float(np.clip(2.0 * np.std(_arr),  0.01, 2.0))
+        _opt_l = float(np.clip(np.mean(_arr),        0.0,  1.0))
+        st.session_state.params_sig    = _params_sig
+        st.session_state.wl_opt_window = _opt_w
+        st.session_state.wl_opt_level  = _opt_l
+        st.session_state.wl_window     = _opt_w
+        st.session_state.wl_level      = _opt_l
+
+    st.markdown("""
+    <style>
+    div.stButton > button {
+        background-color: #2196F3;
+        color: white;
+        border: none;
+        border-radius: 4px;
+    }
+    div.stButton > button:hover {
+        background-color: #1976D2;
+        color: white;
+    }
+    </style>
+""", unsafe_allow_html=True)
+    if st.button("Reset W/L to Optimal"):
+        st.session_state.wl_window = st.session_state.wl_opt_window
+        st.session_state.wl_level  = st.session_state.wl_opt_level
 
     st.markdown("**Window / Level**")
     st.caption("Auto-resets to optimal values when sequence changes.")
@@ -494,7 +546,7 @@ else:
     _slice_for_vol = slice_mm
     _ref_slice     = 5.0
 _ref_vox   = (240.0 / 256.0) ** 2 * _ref_slice
-voxel_vol  = (FOV / matrix) ** 2 * _slice_for_vol
+voxel_vol  = (FOV_read / freq_matrix) * (FOV_phase / phase_matrix) * _slice_for_vol
 _vol_scale = voxel_vol / _ref_vox
 signals    = {t: round(base_signals[t] * _vol_scale, 2) for t in base_signals}
 
@@ -509,8 +561,9 @@ snrs = {t: signals[t] / noise_floor if noise_floor > 0 else 0.0 for t in signals
 
 names    = list(TISSUES.keys())
 colors   = [TISSUES[t]["color"] for t in names]
-pixel_mm = FOV / matrix
-scan_sec = calc_scan_time(TR, matrix, ETL, NEX, seq, Npartitions)
+freq_pixel_mm  = FOV_read  / freq_matrix
+phase_pixel_mm = FOV_phase / phase_matrix
+scan_sec = calc_scan_time(TR, phase_matrix, ETL, NEX, seq, Npartitions)
 scan_min = int(scan_sec // 60)
 scan_s   = int(scan_sec % 60)
 cnr_wm_gm  = abs(snrs["WM"] - snrs["GM"])
@@ -551,8 +604,11 @@ st.markdown("<h3 style='text-align: center;'>MRI Simulator — Brain (3T)</h3>",
 # FOV zoom: visible half-width in 256-px image space scales linearly with FOV.
 # At FOV_MAX (400 mm) the full image is visible; smaller FOV zooms in on the
 # crosshair position, larger FOV (up to max) zooms out.
-FOV_MAX = 400.0
-half_w  = 128.0 * FOV / FOV_MAX
+FOV_MAX      = 400.0
+half_w_read  = 128.0 * FOV_read  / FOV_MAX   # half-width  in image-px for read  direction
+half_h_phase = 128.0 * FOV_phase / FOV_MAX   # half-height in image-px for phase direction
+# Number of phantom rows the phase FOV covers (for aliasing calculation)
+n_phase_rows = max(1, round(256 * FOV_phase / FOV_MAX))
 plane_configs = [
     # (name, slice_idx, crosshair_row_display, crosshair_col_display, hcolor, vcolor)
     ("Axial",    z_pos, 255 - y_pos/433*255, x_pos/361*255, "#44FF44", "#FF4444"),
@@ -568,11 +624,25 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
     # In-plane resolution effect: downsample to matrix size then upsample back
     # to 256 px with nearest-neighbour to produce a pixelated/blocky look at
     # low matrix sizes and a sharp look at high matrix sizes.
-    if matrix < 256:
-        step = max(1, 256 // matrix)
-        img  = img[::step, ::step]
-        img  = np.repeat(np.repeat(img, step, axis=0), step, axis=1)
-        img  = img[:256, :256]  # trim any overshoot from rounding
+    step_x = max(1, 256 // freq_matrix)   # frequency → columns (axis=1)
+    step_y = max(1, 256 // phase_matrix)  # phase     → rows    (axis=0)
+    if step_x > 1 or step_y > 1:
+        img = img[::step_y, ::step_x]
+        img = np.repeat(np.repeat(img, step_y, axis=0), step_x, axis=1)
+        img = img[:256, :256]  # trim any overshoot from rounding
+    # Rectangular FOV + phase-direction aliasing.
+    # When FOV_phase < FOV_read the phase direction covers fewer anatomy rows.
+    # Anatomy outside the phase FOV wraps back in (Nyquist/aliasing).
+    if n_phase_rows < 256:
+        phase_start = 128 - n_phase_rows // 2
+        aliased = np.zeros_like(img)
+        n_periods = int(np.ceil(256 / n_phase_rows)) + 1
+        for k in range(-n_periods, n_periods + 1):
+            src_rows = np.arange(n_phase_rows) + phase_start + k * n_phase_rows
+            dst_rows = np.arange(n_phase_rows) + phase_start
+            valid    = (src_rows >= 0) & (src_rows < 256)
+            aliased[dst_rows[valid], :] += img[src_rows[valid], :]
+        img = aliased
     # Partial volume averaging: blur proportional to slice thickness.
     # sigma = 0 at 1 mm (sharp), rising to ~2.5 at 10 mm (heavy blurring).
     pva_sigma = (slice_mm - 1) * 0.25
@@ -586,8 +656,8 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
                     interpolation="nearest")
         ax_p.axhline(ch_y, color=hcol, linewidth=0.8, alpha=0.8)
         ax_p.axvline(ch_x, color=vcol, linewidth=0.8, alpha=0.8)
-        ax_p.set_xlim(128 - half_w, 128 + half_w)
-        ax_p.set_ylim(128 + half_w, 128 - half_w)
+        ax_p.set_xlim(128 - half_w_read,  128 + half_w_read)
+        ax_p.set_ylim(128 + half_h_phase, 128 - half_h_phase)
         ax_p.axis("off")
         ax_p.set_title(plane_name, color="white", fontsize=8, pad=2)
         ax_p.text(0.5, 0.02, f"W:{wl_window:.2f} L:{wl_level:.2f}",
@@ -833,10 +903,9 @@ m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
 m1.metric("CNR WM–GM",  f"{cnr_wm_gm:.1f}")
 m2.metric("CNR WM–CSF", f"{cnr_wm_csf:.1f}")
 m3.metric("CNR GM–CSF", f"{cnr_gm_csf:.1f}")
-m4.metric("Pixel size", f"{pixel_mm:.2f} mm")
+m4.metric("Pixel size", f"{freq_pixel_mm:.2f}×{phase_pixel_mm:.2f} mm")
 m5.metric("Scan time",  f"{scan_min}m {scan_s:02d}s")
-voxel_vol = pixel_mm * pixel_mm * slice_mm
-m6.metric("Voxel size", f"{pixel_mm:.2f}×{pixel_mm:.2f}×{slice_mm:.1f} mm")
+m6.metric("Voxel size", f"{freq_pixel_mm:.2f}×{phase_pixel_mm:.2f}×{slice_mm:.1f} mm")
 
 if seq == "GRE":
     m7.metric("Ernst ∠ WM", f"{ernst_angle(TR, TISSUES['WM']['T1']):.1f}°")

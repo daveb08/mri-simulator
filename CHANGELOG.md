@@ -59,3 +59,33 @@ All notable changes to `app.py` are documented here.
 - **SNR math inconsistency**: `signals` dict values and `noise_floor` are now each rounded to 2 decimal places *before* SNR is computed, so that `Signal_displayed / Noise_displayed = SNR_displayed` exactly when a user verifies the arithmetic manually.
 - **EPI T2* decay curve x-axis range**: changed from 0–150 ms to **0–90 ms** to match clinically relevant EPI TE range and better resolve the WM/GM T2* differences.
 - **Spurious vertical line at 500 ms on EPI T2* figure**: CSF has T2* = 500 ms; the per-tissue T2* marker `axvline` was rendering as a line stuck to the right edge of the 0–90 ms plot. Fix: tissue T2* marker lines are now suppressed for any tissue whose T2* exceeds the 90 ms plot window, so only WM (26 ms) and GM (33 ms) markers appear.
+
+---
+
+## Session 6 — Acquisition Geometry: Rectangular Matrix, Rectangular FOV, MPRAGE Timing
+
+### Added
+- **Separate Frequency and Phase Matrix sliders** replacing the single Matrix slider:
+  - `freq_matrix` controls columns (frequency-encode direction); `phase_matrix` controls rows (phase-encode direction).
+  - In-plane resolution pixelation uses `step_x = 256 // freq_matrix` for columns and `step_y = 256 // phase_matrix` for rows independently.
+  - Pixel size caption shows both: `Frequency pixel: FOV_read / freq_matrix mm | Phase pixel: FOV_phase / phase_matrix mm`.
+- **Separate FOV Read and FOV Phase sliders** replacing the single FOV slider:
+  - `FOV_read` drives the frequency-direction viewport and frequency pixel size.
+  - `FOV_phase` drives the phase-direction viewport, phase pixel size, and rectangular FOV display geometry.
+  - When `FOV_phase < FOV_read`, the phantom images display as rectangular (compressed phase dimension) via independent `set_xlim` / `set_ylim` values.
+  - **Phase-direction aliasing simulation**: when `FOV_phase < FOV_read`, anatomy outside the phase FOV window is folded back into the image using periodic accumulation (`n_periods` wrap cycles), correctly simulating Nyquist wraparound artifact.
+- **MPRAGE timing transparency**:
+  - `TR_readout = 7 ms` (fixed) displayed as a labelled parameter — the gradient echo spacing within the partition encode train.
+  - `Readout train duration = TR_readout × Npartitions` shown as a dynamic calculated field.
+  - **Timing constraint warning** in red if `TR < TI + readout_train_duration`, identifying physically impossible parameter combinations.
+  - Explanatory caption describing the MPRAGE timing cycle: inversion → TI delay → readout train → recovery → next inversion.
+- **Reset W/L to Optimal button**: one-shot `st.button` that restores Window/Level sliders to the auto-computed optimal values for the current sequence after manual adjustment. Optimal values stored in `st.session_state.wl_opt_window` / `wl_opt_level` and refreshed whenever sequence or signal parameters change.
+
+### Fixed
+- **MPRAGE scan time formula**: previously multiplied by `Npartitions` via the shared scan time formula, giving an incorrect result (matrix × matrix equivalent). Fixed to `TR × phase_matrix × NEX / 1000` — Npartitions constrains minimum TR through the readout train duration but does not appear in scan time.
+- **EPI scan time using frequency matrix**: `ETL` was set to `freq_matrix` for single-shot EPI, making scan time depend on frequency matrix. Fixed to `ETL = phase_matrix`, giving `Scan time = TR × NEX / 1000` independent of frequency matrix.
+- **Voxel volume using square FOV**: voxel volume now correctly uses `(FOV_read / freq_matrix) × (FOV_phase / phase_matrix) × slice_thickness`, so each dimension updates independently.
+- **Voxel size metric displaying duplicate pixel size**: metric now shows `freq_pixel_mm × phase_pixel_mm × slice_mm` with each dimension computed from its own FOV and matrix values.
+- **TR recovery curve x-axis too wide for FSE/GRE/EPI**: added `ax_t1.set_xlim(0, 6000)` for those sequences only; FLAIR/STIR/DIR retain the wider range needed for their long TR values.
+- **GRE TE slider max too narrow**: expanded from 50 ms to 100 ms; T2* decay figure x-axis capped at 150 ms for GRE only.
+- **Noise floor label cluttering Signal figure**: removed inline `ax.text` label; noise floor value now appears as a legend entry (`fontsize=5`) via the `axhline` label parameter.
