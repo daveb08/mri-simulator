@@ -403,6 +403,19 @@ with st.sidebar:
     NEX     = st.slider("NEX",               1,   8,   1,  1)
     BW      = st.slider("Bandwidth (Hz/px)", 50, 500, 200, 10)
     fat_sat = st.checkbox("Fat Saturation")
+
+    _PF_OPTIONS = {"8/8 (Full)": 1.0, "7/8": 7/8, "6/8": 6/8, "5/8": 5/8}
+    if seq in ("FSE", "GRE", "EPI (single-shot)"):
+        _pf_label    = st.selectbox("Partial Fourier (phase)", list(_PF_OPTIONS.keys()), index=0)
+        pf_fraction  = _PF_OPTIONS[_pf_label]
+        if pf_fraction < 1.0:
+            st.caption(
+                f"k-space: {pf_fraction:.4f} → "
+                f"SNR ×{np.sqrt(pf_fraction):.3f}, "
+                f"scan time ×{pf_fraction:.4f}"
+            )
+    else:
+        pf_fraction = 1.0
     if seq == "MPRAGE" and fat_sat:
         st.caption(
             "Note: chemical shift selective (CHESS) fat suppression is "
@@ -548,7 +561,8 @@ else:
 _ref_vox   = (240.0 / 256.0) ** 2 * _ref_slice
 voxel_vol  = (FOV_read / freq_matrix) * (FOV_phase / phase_matrix) * _slice_for_vol
 _vol_scale = voxel_vol / _ref_vox
-signals    = {t: round(base_signals[t] * _vol_scale, 2) for t in base_signals}
+# Partial Fourier reduces SNR ∝ sqrt(pf_fraction) — fewer k-space lines acquired.
+signals    = {t: round(base_signals[t] * _vol_scale * np.sqrt(pf_fraction), 2) for t in base_signals}
 
 # STEP 2 — System noise floor.
 # Depends ONLY on BW and NEX — Npartitions has no influence whatsoever.
@@ -563,7 +577,7 @@ names    = list(TISSUES.keys())
 colors   = [TISSUES[t]["color"] for t in names]
 freq_pixel_mm  = FOV_read  / freq_matrix
 phase_pixel_mm = FOV_phase / phase_matrix
-scan_sec = calc_scan_time(TR, phase_matrix, ETL, NEX, seq, Npartitions)
+scan_sec = calc_scan_time(TR, phase_matrix, ETL, NEX, seq, Npartitions) * pf_fraction
 scan_min = int(scan_sec // 60)
 scan_s   = int(scan_sec % 60)
 cnr_wm_gm  = abs(snrs["WM"] - snrs["GM"])
@@ -643,6 +657,18 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
             valid    = (src_rows >= 0) & (src_rows < 256)
             aliased[dst_rows[valid], :] += img[src_rows[valid], :]
         img = aliased
+    # Gibbs ringing artifact from partial Fourier k-space truncation (phase dir).
+    # Truncate the central pf_fraction of k-space rows; ringing intensity
+    # increases as the fraction decreases toward 5/8.
+    if pf_fraction < 1.0:
+        n_rows  = img.shape[0]
+        n_keep  = max(1, round(n_rows * pf_fraction))
+        ksp     = np.fft.fftshift(np.fft.fft(img, axis=0), axes=0)
+        center  = n_rows // 2
+        mask    = np.zeros(n_rows)
+        mask[center - n_keep // 2 : center + n_keep // 2] = 1.0
+        ksp    *= mask[:, np.newaxis]
+        img     = np.clip(np.real(np.fft.ifft(np.fft.ifftshift(ksp, axes=0), axis=0)), 0, 1)
     # Partial volume averaging: blur proportional to slice thickness.
     # sigma = 0 at 1 mm (sharp), rising to ~2.5 at 10 mm (heavy blurring).
     pva_sigma = (slice_mm - 1) * 0.25
