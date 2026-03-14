@@ -89,3 +89,34 @@ All notable changes to `app.py` are documented here.
 - **TR recovery curve x-axis too wide for FSE/GRE/EPI**: added `ax_t1.set_xlim(0, 6000)` for those sequences only; FLAIR/STIR/DIR retain the wider range needed for their long TR values.
 - **GRE TE slider max too narrow**: expanded from 50 ms to 100 ms; T2* decay figure x-axis capped at 150 ms for GRE only.
 - **Noise floor label cluttering Signal figure**: removed inline `ax.text` label; noise floor value now appears as a legend entry (`fontsize=5`) via the `axhline` label parameter.
+
+---
+
+## Session 7 — FSE Pulse Sequence Diagram Rewrite & bSSFP Refactor
+
+### Added
+- **Physics-accurate FSE pulse sequence diagram** — complete rewrite of the FSE drawing block:
+  - All 180° refocusing pulses rendered as **sinc pulses** (matching the 90° excitation style).
+  - **Composite Gss crusher waveform** around each 180° pulse: single continuous 8-point bridge shape — rise to leading crusher plateau (+0.85) → fall to slice-select plateau (+0.50, coinciding with sinc pulse) → rise to trailing crusher plateau (+0.85) → fall to zero. Both crushers positive (equal area).
+  - **Gradient timing order**: phase-encode blip → Gfe readout → phase-encode rewind within each echo period.
+  - **PE blip placement**: encode blip centred in the window between the trailing crusher end and the Gfe readout start; rewind blip centred in the window between the Gfe readout end and the next leading crusher start.
+  - **PE amplitude ordering**: amplitude scales linearly with distance from `eff_idx`; smallest blip at the effective echo (k-space centre), largest at the outermost echoes. Sign alternates per echo.
+  - **Rewind lobes**: equal amplitude and opposite polarity to their corresponding encode blip.
+  - **T2-decay signal envelope**: `eamp = FSE_SIG_AMP_EFF × exp(−dist × FSE_SIG_DECAY)`, minimum 0.15, where `dist = |i − eff_idx|`.
+  - **TEeff annotation**: double-headed arrow on the signal row spanning from the 90° pulse centre to the effective echo centre, labelled `TEeff = TE ms`.
+  - **Gfe readout always positive** for all echoes.
+  - **Faint dotted vertical line** at the 90° pulse centre propagated across all five subplot rows.
+- **Fixed τ independent of ETL**: `tau_s = FSE_MAX_ESP − FSE_RF_TC = 1.15` schematic units; `esp = 2 × tau_s = 2.30`, constant regardless of ETL. 180° pulse centres at `(2n−1)τ`, echo centres at `2nτ`. Adding more echoes extends the diagram rightward without shifting existing waveforms.
+- **Maximum 6 echoes displayed** in the FSE PSD regardless of ETL slider value; sidebar caption notes the limit.
+- **"Showing N of ETL echoes" annotation** displayed as `fig.text` at figure coordinates (0.67, 0.95) in bold white, to the right of the title, when ETL > 6.
+- **ESP sidebar display**: calculated echo spacing `ESP ≈ TE / eff_idx+1 ms` shown as a `st.caption` in the FSE sidebar block.
+- **FSE constraint warnings**:
+  - Red `st.error` in sidebar if TR < ETL × ESP (TR too short) or ESP < 10 ms (physically unrealistic).
+  - When either constraint is violated, all PSD subplot rows are hidden and a red-boxed warning is rendered via `fig.text` at figure centre; drawing returns early.
+- **TR annotation arrow** moved to the Gss row (`ann_tr(..., ax=ax_ss)`), spanning from the 90° centre to the end of the last echo's period.
+- **bSSFP drawing block refactored**: replaced all inline numeric literals with the `BSSFP_` global constants defined in the previous session.
+
+### Fixed
+- **Vline colour bug**: invalid hex colour `"#F6E606EC"` on the 90° excitation vline replaced with `"#555555"`.
+- **`ann_te` helper**: added `draw_axes` parameter so the TEeff arrow can be restricted to specific subplot rows (signal row only for FSE).
+- **`ann_tr` helper**: added `ax` parameter so the TR arrow can be drawn on any row rather than always on `ax_rf`.

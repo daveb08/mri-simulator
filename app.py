@@ -176,6 +176,531 @@ def calc_scan_time(TR, phase_matrix, ETL, NEX, seq, Npartitions=1):
     else:
         return TR * (phase_matrix / ETL) * Npartitions * NEX / 1000.0
 
+
+# ---------------------------------------------------------------------------
+# Pulse sequence diagram
+# ---------------------------------------------------------------------------
+# Tuning constants — change values here to adjust all sequence diagrams
+# without hunting through the drawing code below.
+
+# Figure layout
+PSD_FIG_SIZE        = (8.0, 3.0)   # (width, height) in inches
+PSD_HSPACE          = 0.06         # vertical spacing between subplot rows
+PSD_MARGIN_TOP      = 0.88
+PSD_MARGIN_BOT      = 0.09
+PSD_MARGIN_LEFT     = 0.09
+PSD_MARGIN_RIGHT    = 0.97
+PSD_Y_MIN           = -1.85        # lower y-limit for every row
+PSD_Y_MAX           =  2.00        # upper y-limit for every row
+PSD_YLABEL_PAD      = 30           # labelpad for row name text
+
+# Line widths
+WAVEFORM_LINEWIDTH  = 0.9   # RF pulses and gradient trapezoids
+SIGNAL_LINEWIDTH    = 0.8   # echo / FID waveforms
+RECOVERY_LINEWIDTH  = 0.6   # dashed Mz recovery guide
+BASELINE_LINEWIDTH  = 0.5   # zero-line under each row
+VMARK_LINEWIDTH     = 0.4   # vertical timing-marker lines
+ARROW_LINEWIDTH     = 0.7   # annotation double-arrow width
+
+# RF pulse half-widths (schematic time units)
+RF_HW_EXCITE        = 0.32  # 90° excitation sinc — GRE, FSE
+RF_HW_FLAIR         = 0.30  # 90° excitation sinc — FLAIR, STIR
+RF_HW_BSSFP         = 0.27  # sinc in bSSFP (shorter TR periods)
+RF_HW_INV           = 0.22  # 180° inversion rect — FLAIR, STIR
+RF_HW_180_FSE       = 0.19  # 180° refocusing rect — FSE
+RF_HW_180_REF       = 0.18  # 180° refocusing rect — FLAIR, STIR
+RF_SINC_FREQ        = 2.5   # sinc lobe density (oscillations per half-width)
+RF_SINC_N           = 80    # sample points per sinc waveform
+RF_LABEL_OFFSET     = 0.22  # gap from pulse peak to label text
+
+# Gradient trapezoid geometry (schematic time units)
+GRAD_RISE           = 0.10  # standard rise / fall time
+GRAD_RISE_MD        = 0.08  # medium rise — FLAIR/STIR lobes
+GRAD_RISE_SM        = 0.10  # small rise  — FSE 180° Gss, PE blips.
+GRAD_RISE_XS        = 0.05  # extra-small — bSSFP balanced gradients
+GRAD_SS_FLAT        = 0.52  # flat-top: slice-select main lobe
+GRAD_SS_AMP         =  1.00 # amplitude:  slice-select main lobe
+GRAD_SS_REP_RISE    = 0.06  # rise: Gss rephaser (GRE)
+GRAD_SS_REP_FLAT    = 0.28  # flat-top: Gss rephaser
+GRAD_SS_REP_AMP     = -0.50 # amplitude: Gss rephaser
+GRAD_SS_INV_AMP     =  0.90 # amplitude: Gss under inversion / refocus
+GRAD_SS_INV_FLAT    =  0.56 # flat-top:  Gss under inversion / refocus
+GRAD_PE_AMP         =  0.70 # amplitude: phase-encode main lobe
+GRAD_PE_FLAT        =  0.40 # flat-top:  phase-encode main lobe
+GRAD_FE_DEP_AMP     = -0.60 # amplitude: Gfe dephase lobe
+GRAD_FE_DEP_FLAT    =  0.38 # flat-top:  Gfe dephase lobe
+GRAD_FE_READ_AMP    =  1.00 # amplitude: Gfe readout lobe
+GRAD_FE_READ_FLAT   =  1.15 # flat-top:  Gfe readout lobe
+
+# Signal / echo waveform geometry
+SIGNAL_N            = 100   # sample points for echo waveforms
+SIGNAL_RANGE        = 1.8   # time extent each side = hw × SIGNAL_RANGE
+SIGNAL_FREQ_GRE     = 18    # oscillation frequency: gradient echo
+SIGNAL_FREQ_SE      = 15    # oscillation frequency: spin echo
+SIGNAL_ENV_GRE      = 0.75  # Gaussian sigma factor: gradient echo
+SIGNAL_ENV_SE       = 0.65  # Gaussian sigma factor: spin echo
+SIGNAL_HW_GRE       = 0.36  # envelope half-width: gradient echo
+SIGNAL_HW_SE        = 0.27  # envelope half-width: spin echo
+SIGNAL_HW_BSSFP     = 0.22  # envelope half-width: bSSFP echo
+RECOVERY_ALPHA      = 0.35  # opacity of dashed Mz recovery guide
+
+# Annotation geometry
+ANN_TE_Y            = -1.45 # y-position: TE double-arrow
+ANN_TI_Y            = -1.45 # y-position: TI double-arrow
+ANN_TR_Y            =  1.72 # y-position: TR double-arrow
+ANN_LABEL_OFFSET    =  0.28 # gap from arrow to annotation text (below)
+ANN_TR_LABEL_OFF    =  0.15 # gap from TR arrow to TR label (above)
+
+# Font sizes (pt)
+FONT_ROW_LABEL      = 6     # row labels (RF, Gss, Gpe …)
+FONT_RF_LABEL       = 5.5   # flip-angle / pulse-type labels on RF row
+FONT_ANN            = 5     # TE / TI / TR annotation text
+FONT_TITLE          = 7     # diagram title
+FONT_FOOTER         = 6     # "Time →" footer
+
+# Schematic time axis
+T_TOTAL             = 10.0  # full span in schematic units
+
+# ── Section 1: FSE constants ──────────────────────────────────────────────
+FSE_MAX_ESP             = 1.75  # maximum schematic echo spacing (caps crowding at high ETL)
+FSE_MAX_ECHOES_TO_SHOW  = 6     # maximum echoes to show at once (caps crowding at high ETL)
+FSE_T_OFFSET            = 2.6   # time reserved before first 180° pulse (90° excite + dephase lobes)
+FSE_RF_TC               = 0.6   # time-centre of 90° excitation RF pulse on PSD time axis
+FSE_GSS_T0              = 0.18  # start time of Gss slice-select main lobe on PSD time axis
+FSE_GSS_REP_T0          = 0.92  # start time of Gss rephaser lobe on PSD time axis
+FSE_GSS_REP_FLAT        = 0.26  # flat-top duration of Gss rephaser (FSE, slightly narrower than GRE)
+FSE_GPE_T0              = 1.12  # start time of initial Gpe dephase lobe
+FSE_GPE_FLAT            = 0.30  # flat-top of initial Gpe dephase lobe
+FSE_GPE_AMP             = 0.80  # amplitude of initial Gpe dephase lobe
+FSE_GFE_T0              = 1.12  # start time of initial Gfe dephase lobe
+FSE_GFE_FLAT            = 0.30  # flat-top of initial Gfe dephase lobe
+FSE_GFE_AMP             = -0.50 # amplitude of initial Gfe dephase lobe
+FSE_ECHO_OFFSET         = 0.50  # echo centre as fraction of esp after 180° pulse centre
+FSE_CRUSH_RISE          = 0.05  # outer rise/fall time (0→crusher and crusher→0)
+FSE_CRUSH_SS_RISE       = 0.05  # inner rise time between crusher and SS plateau levels
+FSE_CRUSH_PRE_FLAT      = 0.10  # leading crusher plateau duration (before SS lobe)
+FSE_CRUSH_NEG_FLAT      = 0.10  # trailing negative crusher plateau duration (after SS lobe)
+FSE_CRUSH_AMP           = 0.85  # amplitude of crusher lobes (above SS plateau level)
+FSE_SS_AMP_180          = 0.50  # amplitude of SS plateau under each 180° sinc pulse (below crushers)
+FSE_PE_AMP_MIN          = 0.10  # Gpe blip amplitude at eff_idx (k-space centre echo)
+FSE_PE_AMP_MAX          = 0.75  # Gpe blip amplitude at outermost echoes (max k-space)
+FSE_GPE_BLIP_FLAT       = 0.12  # flat-top of Gpe phase-encode blip per echo
+FSE_GFE_ECHO_OFFSET     = 0.42  # (legacy — kept for reference; readout timing now computed from echo centre)
+FSE_GFE_READ_FLAT       = 0.30  # flat-top of Gfe readout lobe per echo
+FSE_GFE_ECHO_AMP        = 0.90  # amplitude of Gfe readout lobe (positive for all echoes)
+FSE_SIG_AMP_EFF         = 1.00  # peak signal amplitude at the eff_idx echo
+FSE_SIG_DECAY           = 0.40  # per-echo T2-decay exponent away from eff_idx
+FSE_NOMINAL_ESP_MS      = 20.0  # nominal echo spacing (ms) used to map TE slider → eff_idx
+FSE_XLIM_PAD            = 0.30  # x-axis padding beyond T_TOTAL
+
+# ── Section 2: FLAIR / STIR constants ────────────────────────────────────
+FLAIR_TI_MIN_S          = 1.2   # minimum schematic TI span (left boundary)
+FLAIR_TI_RANGE          = 3.8   # T_TOTAL minus this sets the usable TI span
+FLAIR_TI_CLAMP_MIN      = 1.0   # lower clamp on schematic ti_s
+FLAIR_TI_CLAMP_MAX      = 6.8   # upper clamp on schematic ti_s
+FLAIR_TE_S              = 0.85  # schematic TE span (inversion excite → echo)
+FLAIR_T_INV             = 0.45  # time-centre of 180° inversion pulse
+FLAIR_REC_T0_OFFSET     = 0.28  # recovery curve start offset after inversion centre
+FLAIR_REC_T1_OFFSET     = 0.12  # recovery curve end offset before 90° excitation
+FLAIR_REC_N             = 90    # sample points for Mz recovery guide curve
+FLAIR_MZ_SCALE          = 0.68  # vertical scale of Mz recovery guide
+FLAIR_T1_SCALE          = 0.48  # T1 time-constant scale factor for recovery curve
+FLAIR_GSS_INV_OFFSET    = 0.36  # how far before inversion centre Gss lobe starts
+FLAIR_GSS_EXC_OFFSET    = 0.46  # how far before 90° centre Gss lobe starts
+FLAIR_GSS_REW_OFFSET    = 0.32  # time after 90° centre that Gss rephaser starts
+FLAIR_GSS_REW_FLAT      = 0.22  # flat-top of Gss rephaser after 90°
+FLAIR_GSS_REW_AMP       = -0.45 # amplitude of Gss rephaser after 90°
+FLAIR_GPE_EXC_OFFSET    = 0.58  # time after 90° centre that Gpe dephase starts
+FLAIR_GFE_EXC_OFFSET    = 0.58  # time after 90° centre that Gfe dephase starts
+FLAIR_GFE_DEP_AMP       = -0.50 # amplitude of Gfe dephase lobe after 90°
+FLAIR_GSS_REF_OFFSET    = 0.30  # how far before refocus centre Gss lobe starts
+FLAIR_GSS_REF_FLAT      = 0.46  # flat-top of Gss lobe under refocus pulse
+FLAIR_GSS_REF_AMP       = 0.85  # amplitude of Gss lobe under refocus pulse
+FLAIR_GFE_READ_OFFSET   = 0.46  # how far before echo centre Gfe readout starts
+FLAIR_GFE_READ_FLAT     = 0.72  # flat-top of Gfe readout lobe
+FLAIR_GFE_READ_AMP      = 0.95  # amplitude of Gfe readout lobe
+FLAIR_GPE_REW_OFFSET    = 0.22  # time after echo centre that Gpe rewind starts
+FLAIR_ANN_TE_Y          = -1.05 # y-position of TE annotation arrow
+FLAIR_XLIM_PAD          = 0.30  # x-axis padding beyond T_TOTAL
+
+# ── Section 3: bSSFP constants ────────────────────────────────────────────
+N_BSSFP_REPS            = 3     # number of TR repetitions shown
+BSSFP_RF_OFF            = 0.20  # RF centre as fraction of tr_w
+BSSFP_SIG_OFF           = 0.62  # echo centre as fraction of tr_w
+BSSFP_SS_AMP            = 0.70  # Gss balanced lobe amplitude
+BSSFP_PE_AMP            = 0.55  # Gpe balanced lobe amplitude
+BSSFP_FE_AMP            = 0.65  # Gfe prephase / rewind lobe amplitude
+BSSFP_TR1_AMP           = 0.65  # RF amplitude for first (transient) TR
+BSSFP_SIG_SCALE         = 0.78  # signal amplitude scale relative to RF amplitude
+BSSFP_GSS_PRE_OFFSET    = 0.04  # t0 of Gss pre-pulse within tr_w
+BSSFP_GSS_PRE_FLAT      = 0.24  # flat-top of Gss pre-pulse lobe
+BSSFP_GSS_POST_OFFSET   = 0.38  # t0 of Gss post-pulse (balanced) within tr_w
+BSSFP_GSS_POST_FLAT     = 0.24  # flat-top of Gss post-pulse lobe
+BSSFP_GPE_PRE_OFFSET    = 0.62  # t0 of Gpe pre-readout lobe within tr_w
+BSSFP_GPE_PRE_FLAT      = 0.20  # flat-top of Gpe pre-readout lobe
+BSSFP_GPE_POST_OFFSET   = 0.90  # t0 of Gpe post-readout (rewind) lobe within tr_w
+BSSFP_GPE_POST_FLAT     = 0.20  # flat-top of Gpe rewind lobe
+BSSFP_GFE_PRE_OFFSET    = 0.62  # t0 of Gfe prephase lobe within tr_w
+BSSFP_GFE_PRE_FLAT      = 0.20  # flat-top of Gfe prephase lobe
+BSSFP_GFE_READ_OFFSET   = 0.90  # t0 of Gfe readout lobe within tr_w
+BSSFP_GFE_READ_FLAT     = 0.36  # flat-top of Gfe readout lobe
+BSSFP_GFE_POST_OFFSET   = 1.38  # t0 of Gfe rewind lobe within tr_w
+BSSFP_GFE_POST_FLAT     = 0.20  # flat-top of Gfe rewind lobe
+BSSFP_VMARK_COLOR       = "#444444"  # colour of TR-boundary vertical marker
+BSSFP_FONT_REPS         = FONT_ANN - 0.5  # font size for "×N TRs shown" label
+
+# ── Section 4: GRE constants ──────────────────────────────────────────────
+GRE_RF_TC               = 0.6   # time-centre of excitation RF pulse
+GRE_TE_MIN              = 1.8   # minimum schematic TE position
+GRE_TE_MAX_MS           = 100.0 # TE value (ms) that maps to maximum schematic TE
+GRE_TE_RANGE            = 4.0   # schematic TE range (added to GRE_TE_MIN)
+GRE_GSS_T0              = 0.18  # start time of Gss slice-select main lobe
+GRE_GSS_REP_T0          = 0.92  # start time of Gss rephaser lobe
+GRE_GPE_T0              = 1.35  # start time of Gpe phase-encode lobe
+GRE_GPE_REWIND_OFFSET   = 0.62  # time after echo centre that Gpe rewind starts
+GRE_GFE_T0              = 1.35  # start time of Gfe dephase lobe
+GRE_GFE_READ_OFFSET     = 0.68  # how far before echo centre Gfe readout starts
+GRE_SIG_AMP             = 1.10  # gradient echo signal amplitude
+GRE_GHOST_AMP           = 0.65  # RF amplitude for ghost next-TR pulse
+GRE_GHOST_GSS_OFFSET    = 0.42  # how far before T_TOTAL the ghost Gss lobe starts
+
+
+def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL):
+    """Return a matplotlib Figure with an oscilloscope-style pulse sequence
+    diagram for FSE, GRE, FLAIR, STIR, bSSFP.  Returns None for others."""
+    if seq not in ("FSE", "GRE", "FLAIR", "STIR", "bSSFP"):
+        return None
+
+    ROW_LABELS = ["RF", "Gss", "Gpe", "Gfe", "Signal"]
+    ROW_COLORS = ["#FFD700", "#FF6666", "#66DD66", "#6699FF", "#FFFFFF"]
+
+    fig, axes = plt.subplots(
+        5, 1, figsize=PSD_FIG_SIZE, facecolor="#1a1a1a", sharex=True,
+        gridspec_kw={"hspace": PSD_HSPACE,
+                     "top":    PSD_MARGIN_TOP,  "bottom": PSD_MARGIN_BOT,
+                     "left":   PSD_MARGIN_LEFT, "right":  PSD_MARGIN_RIGHT})
+    c_rf, c_ss, c_pe, c_fe, c_sig = ROW_COLORS
+    ax_rf, ax_ss, ax_pe, ax_fe, ax_sig = axes
+
+    for ax, label, col in zip(axes, ROW_LABELS, ROW_COLORS):
+        ax.set_facecolor("#1a1a1a")
+        ax.set_ylim(PSD_Y_MIN, PSD_Y_MAX)
+        ax.axhline(0, color="#3a3a3a", linewidth=BASELINE_LINEWIDTH, zorder=0)
+        ax.set_yticks([])
+        ax.set_ylabel(label, color=col, fontsize=FONT_ROW_LABEL, rotation=0,
+                      labelpad=PSD_YLABEL_PAD, va="center", ha="right")
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+
+    # ---- drawing helpers ------------------------------------------------
+    def trap(ax, t0, rise, flat, fall, amp, col):
+        t = [t0, t0+rise, t0+rise+flat, t0+rise+flat+fall]
+        ax.plot(t, [0, amp, amp, 0], color=col, linewidth=WAVEFORM_LINEWIDTH)
+
+    def sinc_rf(ax, tc, amp, hw, label=None, col="#FFD700"):
+        tt = np.linspace(tc - hw, tc + hw, RF_SINC_N)
+        yy = amp * np.sinc(RF_SINC_FREQ * (tt - tc) / hw)
+        ax.plot(tt, yy, color=col, linewidth=WAVEFORM_LINEWIDTH)
+        if label:
+            ax.text(tc, abs(amp) + RF_LABEL_OFFSET, label, color=col,
+                    fontsize=FONT_RF_LABEL, ha="center", va="bottom",
+                    fontweight="bold")
+
+    def rect_rf(ax, tc, amp, hw, label=None, col="#FFD700"):
+        ax.plot([tc-hw, tc-hw, tc+hw, tc+hw], [0, amp, amp, 0],
+                color=col, linewidth=WAVEFORM_LINEWIDTH)
+        if label:
+            ax.text(tc, amp + RF_LABEL_OFFSET, label, color=col,
+                    fontsize=FONT_RF_LABEL, ha="center", va="bottom",
+                    fontweight="bold")
+
+    def grad_echo(ax, tc, amp, hw, col="#FFFFFF"):
+        tt  = np.linspace(tc - hw*SIGNAL_RANGE, tc + hw*SIGNAL_RANGE, SIGNAL_N)
+        env = amp * np.exp(-((tt-tc)**2) / (2*(hw*SIGNAL_ENV_GRE)**2))
+        ax.plot(tt, env * np.cos(SIGNAL_FREQ_GRE*(tt-tc)),
+                color=col, linewidth=SIGNAL_LINEWIDTH)
+
+    def spin_echo(ax, tc, amp, hw, col="#FFFFFF"):
+        tt  = np.linspace(tc - hw*SIGNAL_RANGE, tc + hw*SIGNAL_RANGE, SIGNAL_N)
+        env = amp * np.exp(-((tt-tc)**2) / (2*(hw*SIGNAL_ENV_SE)**2))
+        ax.plot(tt, env * np.cos(SIGNAL_FREQ_SE*(tt-tc)),
+                color=col, linewidth=SIGNAL_LINEWIDTH)
+
+    def ann_te(t_rf, t_echo, y=ANN_TE_Y, label=None, draw_axes=None):
+        _draw = draw_axes if draw_axes is not None else (ax_fe, ax_sig)
+        for ax in _draw:
+            ax.annotate("", xy=(t_echo, y), xytext=(t_rf, y),
+                        arrowprops=dict(arrowstyle="<->", color="#AAAAAA",
+                                        lw=ARROW_LINEWIDTH))
+        _lbl = label if label is not None else f"TE={TE} ms"
+        if ax_sig in _draw:
+            ax_sig.text((t_rf+t_echo)/2, y - ANN_LABEL_OFFSET, _lbl,
+                        color="#AAAAAA", fontsize=FONT_ANN, ha="center", va="top")
+
+    def ann_ti(t_inv, t_exc, y=ANN_TI_Y):
+        for ax in (ax_ss, ax_sig):
+            ax.annotate("", xy=(t_exc, y), xytext=(t_inv, y),
+                        arrowprops=dict(arrowstyle="<->", color="#FFAA44",
+                                        lw=ARROW_LINEWIDTH))
+        ax_sig.text((t_inv+t_exc)/2, y - ANN_LABEL_OFFSET, f"TI={TI} ms",
+                    color="#FFAA44", fontsize=FONT_ANN, ha="center", va="top")
+
+    def ann_tr(t0, t1, y=ANN_TR_Y, ax=None):
+        _ax = ax if ax is not None else ax_rf
+        _ax.annotate("", xy=(t1, y), xytext=(t0, y),
+                     arrowprops=dict(arrowstyle="<->", color="#888888",
+                                     lw=ARROW_LINEWIDTH))
+        _ax.text((t0+t1)/2, y + ANN_TR_LABEL_OFF, f"TR={TR} ms",
+                 color="#888888", fontsize=FONT_ANN, ha="center", va="bottom")
+
+    def vmark(t, col="#555555"):
+        for ax in axes:
+            ax.axvline(t, color=col, linewidth=VMARK_LINEWIDTH,
+                       linestyle=":", alpha=0.6)
+
+    # ================================================================
+    # GRE
+    # ================================================================
+    if seq == "GRE":
+        te_s = GRE_TE_MIN + (min(TE, GRE_TE_MAX_MS) / GRE_TE_MAX_MS) * GRE_TE_RANGE
+        sinc_rf(ax_rf, GRE_RF_TC, 1.0, RF_HW_EXCITE, label=f"{FA}°")
+        trap(ax_ss, GRE_GSS_T0,          GRAD_RISE,        GRAD_SS_FLAT,      GRAD_RISE,        GRAD_SS_AMP,      c_ss)
+        trap(ax_ss, GRE_GSS_REP_T0,      GRAD_SS_REP_RISE, GRAD_SS_REP_FLAT,  GRAD_SS_REP_RISE, GRAD_SS_REP_AMP,  c_ss)
+        trap(ax_pe, GRE_GPE_T0,          GRAD_RISE,        GRAD_PE_FLAT,      GRAD_RISE,        GRAD_PE_AMP,      c_pe)
+        trap(ax_pe, te_s+GRE_GPE_REWIND_OFFSET, GRAD_RISE, GRAD_PE_FLAT,      GRAD_RISE,       -GRAD_PE_AMP,      c_pe)
+        trap(ax_fe, GRE_GFE_T0,          GRAD_RISE,        GRAD_FE_DEP_FLAT,  GRAD_RISE,        GRAD_FE_DEP_AMP,  c_fe)
+        trap(ax_fe, te_s-GRE_GFE_READ_OFFSET, GRAD_RISE,   GRAD_FE_READ_FLAT, GRAD_RISE,        GRAD_FE_READ_AMP, c_fe)
+        grad_echo(ax_sig, te_s, GRE_SIG_AMP, SIGNAL_HW_GRE)
+        sinc_rf(ax_rf, T_TOTAL, GRE_GHOST_AMP, RF_HW_EXCITE, col=c_rf + "55")
+        trap(ax_ss, T_TOTAL-GRE_GHOST_GSS_OFFSET, GRAD_RISE, GRAD_SS_FLAT, GRAD_RISE,
+             GRAD_SS_AMP, c_ss + "44")
+        vmark(GRE_RF_TC, c_rf); vmark(te_s, "#AAAAAA")
+        ann_te(GRE_RF_TC, te_s)
+        ann_tr(0.0, T_TOTAL)
+        axes[-1].set_xlim(0, T_TOTAL + 0.6)
+
+    # ================================================================
+    # FSE
+    # ================================================================
+    elif seq == "FSE":
+        n_echoes_to_show = min(ETL, FSE_MAX_ECHOES_TO_SHOW)
+        # τ_s is fixed (depends only on TE/eff_idx via constants, not on ETL).
+        # 180° pulses sit at (2n−1)τ_s, echoes at 2nτ_s, measured from FSE_RF_TC.
+        tau_s = FSE_MAX_ESP - FSE_RF_TC   # schematic τ (half-ESP), = 1.15 units
+        esp   = 2.0 * tau_s               # schematic ESP = 2τ_s, fixed regardless of ETL
+        # eff_idx: which echo acquires k-space centre — derived from TE slider and nominal ESP
+        eff_idx = max(0, min(n_echoes_to_show - 1,
+                             round(TE / FSE_NOMINAL_ESP_MS) - 1))
+        _max_dist = max(eff_idx, n_echoes_to_show - 1 - eff_idx, 1)
+
+        # ── Constraint checks — render warning figure instead of sequence ────
+        _esp_ms  = TE / (eff_idx + 1)
+        _min_tr  = ETL * _esp_ms
+        _psd_warn = []
+        if TR < _min_tr:
+            _psd_warn.append(
+                f"TR too short: minimum TR for current ETL and TEeff is {int(_min_tr)} ms")
+        if _esp_ms < 10.0:
+            _psd_warn.append(
+                "Echo spacing too short to be physically realistic\n"
+                "— minimum ESP is approximately 10 ms")
+        if _psd_warn:
+            for _ax in axes:
+                _ax.set_visible(False)
+            fig.text(0.5, 0.5, "\n\n".join(f"⚠  {w}" for w in _psd_warn),
+                     color="#FF4444", fontsize=6.5, ha="center", va="center",
+                     multialignment="center",
+                     bbox=dict(facecolor="#1a1a1a", alpha=0.9,
+                               edgecolor="#FF4444", boxstyle="round,pad=0.6"))
+            fig.text(0.5, 0.93, f"Pulse Sequence — {seq}", color="#CCCCCC",
+                     fontsize=FONT_TITLE, ha="center", va="top", fontweight="bold")
+            return fig
+
+        # ── 90° excitation ──────────────────────────────────────────────────
+        sinc_rf(ax_rf, FSE_RF_TC, 1.0, RF_HW_EXCITE, label="90°")
+        # Faint dotted vline from sinc peak downward through all rows
+        _exc_peak_ymax = (1.0 - PSD_Y_MIN) / (PSD_Y_MAX - PSD_Y_MIN)
+        ax_rf.axvline(FSE_RF_TC, ymin=0, ymax=_exc_peak_ymax,
+                      color="#555555", linewidth=VMARK_LINEWIDTH, linestyle=":", alpha=0.5)
+        for _vax in (ax_ss, ax_pe, ax_fe, ax_sig):
+            _vax.axvline(FSE_RF_TC, color="#555555", linewidth=VMARK_LINEWIDTH,
+                         linestyle=":", alpha=0.5)
+
+        # ── Gss excitation: main slice-select lobe + rephaser ───────────────
+        trap(ax_ss, FSE_GSS_T0, GRAD_RISE, GRAD_SS_FLAT, GRAD_RISE, GRAD_SS_AMP, c_ss)
+        _fse_gss_rep_start = FSE_GSS_T0 + GRAD_RISE + GRAD_SS_FLAT + GRAD_RISE
+        trap(ax_ss, _fse_gss_rep_start, GRAD_SS_REP_RISE, FSE_GSS_REP_FLAT,
+             GRAD_SS_REP_RISE, GRAD_SS_REP_AMP, c_ss)
+
+        # ── Gfe readout prephase (before echo train) ─────────────────────────
+        trap(ax_fe, FSE_GFE_T0, GRAD_RISE_MD, FSE_GFE_FLAT, GRAD_RISE_MD, FSE_GFE_AMP, c_fe)
+
+        # ── Echo train ───────────────────────────────────────────────────────
+        te_pos = None
+        for i in range(n_echoes_to_show):
+            t180  = FSE_MAX_ESP + i * esp
+            techo = t180 + FSE_ECHO_OFFSET * esp
+
+            # 180° refocusing: sinc pulse (not rect) matching excitation shape
+            sinc_rf(ax_rf, t180, 1.0, RF_HW_180_FSE, label="180°")
+
+            # Composite Gss: leading crusher(+) → fall to SS plateau → SS during 180° sinc
+            # → rise to trailing crusher(+, equal area to leading) → fall to zero
+            t_c0 = t180 - RF_HW_180_FSE - FSE_CRUSH_SS_RISE - FSE_CRUSH_PRE_FLAT - FSE_CRUSH_RISE
+            _cx = [t_c0,
+                   t_c0 + FSE_CRUSH_RISE,
+                   t180 - RF_HW_180_FSE - FSE_CRUSH_SS_RISE,
+                   t180 - RF_HW_180_FSE,
+                   t180 + RF_HW_180_FSE,
+                   t180 + RF_HW_180_FSE + FSE_CRUSH_SS_RISE,
+                   t180 + RF_HW_180_FSE + FSE_CRUSH_SS_RISE + FSE_CRUSH_NEG_FLAT,
+                   t180 + RF_HW_180_FSE + FSE_CRUSH_SS_RISE + FSE_CRUSH_NEG_FLAT + FSE_CRUSH_RISE]
+            _cy = [0, FSE_CRUSH_AMP, FSE_CRUSH_AMP, FSE_SS_AMP_180,
+                   FSE_SS_AMP_180, FSE_CRUSH_AMP, FSE_CRUSH_AMP, 0]
+            ax_ss.plot(_cx, _cy, color=c_ss, linewidth=WAVEFORM_LINEWIDTH)
+
+            # PE blip amplitude: smallest at eff_idx (k-space centre), increasing outward
+            _dist  = abs(i - eff_idx)
+            pe_amp = (FSE_PE_AMP_MIN + (FSE_PE_AMP_MAX - FSE_PE_AMP_MIN) * _dist / _max_dist) * ((-1)**i)
+
+            # ── Timing anchors ──────────────────────────────────────────────
+            # techo = t180 + esp/2 = 2nτ (FSE_ECHO_OFFSET = 0.5 enforces this)
+            # t_crush_end: trailing crusher of THIS 180° ends here
+            t_crush_end = (t180 + RF_HW_180_FSE + FSE_CRUSH_SS_RISE
+                           + FSE_CRUSH_NEG_FLAT + FSE_CRUSH_RISE)
+            # Gfe readout window, centred exactly on techo
+            t_gfe_start = techo - GRAD_RISE_SM - FSE_GFE_READ_FLAT / 2
+            t_gfe_end   = techo + FSE_GFE_READ_FLAT / 2 + GRAD_RISE_SM
+            # t_next_crush_start: leading crusher of NEXT 180° starts here
+            t_next_crush_start = ((t180 + esp) - RF_HW_180_FSE
+                                  - FSE_CRUSH_SS_RISE - FSE_CRUSH_PRE_FLAT
+                                  - FSE_CRUSH_RISE)
+            # half-width of a Gpe blip (trap-start to flat-centre)
+            _blip_hw = GRAD_RISE_XS + FSE_GPE_BLIP_FLAT / 2
+
+            # ── Gpe encode blip: centred in [t_crush_end, t_gfe_start] ─────
+            _enc_win = t_gfe_start - t_crush_end
+            if _enc_win >= 2 * _blip_hw:
+                _enc_c = (t_crush_end + t_gfe_start) / 2
+            else:
+                _enc_c = t_crush_end + _blip_hw   # butt against crusher if window tight
+            trap(ax_pe, _enc_c - _blip_hw, GRAD_RISE_XS, FSE_GPE_BLIP_FLAT,
+                 GRAD_RISE_XS, pe_amp, c_pe)
+
+            # ── Gfe readout: positive, centred exactly at techo = t180 + esp/2
+            trap(ax_fe, t_gfe_start, GRAD_RISE_SM, FSE_GFE_READ_FLAT,
+                 GRAD_RISE_SM, FSE_GFE_ECHO_AMP, c_fe)
+
+            # ── Gpe rewind: centred in [t_gfe_end, t_next_crush_start] ─────
+            _rew_win = t_next_crush_start - t_gfe_end
+            if _rew_win >= 2 * _blip_hw:
+                _rew_c = (t_gfe_end + t_next_crush_start) / 2
+            else:
+                _rew_c = t_gfe_end + _blip_hw     # butt against readout if window tight
+            trap(ax_pe, _rew_c - _blip_hw, GRAD_RISE_XS, FSE_GPE_BLIP_FLAT,
+                 GRAD_RISE_XS, -pe_amp, c_pe)
+
+            # Signal: T2-decay envelope centred on eff_idx echo
+            eamp = max(FSE_SIG_AMP_EFF * np.exp(-_dist * FSE_SIG_DECAY), 0.15)
+            spin_echo(ax_sig, techo, eamp, SIGNAL_HW_SE)
+            if i == eff_idx:
+                te_pos = techo
+
+        # Last echo sits at FSE_RF_TC + 2*n_echoes_to_show*tau_s
+        t_diagram_end = FSE_RF_TC + 2 * n_echoes_to_show * tau_s
+        if te_pos:
+            ann_te(FSE_RF_TC, te_pos, label=f"TEeff = {TE} ms", draw_axes=(ax_sig,))
+        if ETL > FSE_MAX_ECHOES_TO_SHOW:
+            fig.text(0.67, 0.95,
+                     f"(Showing {FSE_MAX_ECHOES_TO_SHOW} of {ETL} echoes)",
+                     color="white", fontsize=FONT_TITLE, fontweight="bold",
+                     ha="left", va="top")
+        ann_tr(FSE_RF_TC, t_diagram_end, ax=ax_ss)
+        axes[-1].set_xlim(0, t_diagram_end + FSE_XLIM_PAD)
+
+    # ================================================================
+    # FLAIR / STIR  (shared structure)
+    # ================================================================
+    elif seq in ("FLAIR", "STIR"):
+        ti_s   = FLAIR_TI_MIN_S + (TI / TR) * (T_TOTAL - FLAIR_TI_RANGE)
+        ti_s   = max(FLAIR_TI_CLAMP_MIN, min(ti_s, FLAIR_TI_CLAMP_MAX))
+        t_inv  = FLAIR_T_INV
+        t_exc  = t_inv + ti_s
+        t_ref  = t_exc + FLAIR_TE_S * 0.5
+        t_echo = t_exc + FLAIR_TE_S
+        # 180° inversion pulse + Gss
+        rect_rf(ax_rf, t_inv, 1.0, RF_HW_INV, label="180° inv")
+        trap(ax_ss, t_inv-FLAIR_GSS_INV_OFFSET, GRAD_RISE_MD, GRAD_SS_INV_FLAT,
+             GRAD_RISE_MD, GRAD_SS_INV_AMP, c_ss)
+        # Mz recovery guide (dashed)
+        t_rec = np.linspace(t_inv+FLAIR_REC_T0_OFFSET, t_exc-FLAIR_REC_T1_OFFSET,
+                            FLAIR_REC_N)
+        m_z   = 1.0 - 2.0*np.exp(-(t_rec - t_inv - FLAIR_REC_T0_OFFSET) /
+                                   max(ti_s*FLAIR_T1_SCALE, 0.01))
+        ax_sig.plot(t_rec, m_z * FLAIR_MZ_SCALE, color=c_sig,
+                    linewidth=RECOVERY_LINEWIDTH, alpha=RECOVERY_ALPHA,
+                    linestyle="--")
+        # 90° excitation + Gss + Gpe + Gfe dephase
+        sinc_rf(ax_rf, t_exc, 1.0, RF_HW_FLAIR, label="90°")
+        trap(ax_ss, t_exc-FLAIR_GSS_EXC_OFFSET, GRAD_RISE_MD, GRAD_SS_INV_FLAT,
+             GRAD_RISE_MD, GRAD_SS_INV_AMP, c_ss)
+        trap(ax_ss, t_exc+FLAIR_GSS_REW_OFFSET, GRAD_RISE_XS, FLAIR_GSS_REW_FLAT,
+             GRAD_RISE_XS, FLAIR_GSS_REW_AMP, c_ss)
+        trap(ax_pe, t_exc+FLAIR_GPE_EXC_OFFSET, GRAD_RISE_MD, GRAD_PE_FLAT,
+             GRAD_RISE_MD, GRAD_PE_AMP, c_pe)
+        trap(ax_fe, t_exc+FLAIR_GFE_EXC_OFFSET, GRAD_RISE_MD, GRAD_PE_FLAT,
+             GRAD_RISE_MD, FLAIR_GFE_DEP_AMP, c_fe)
+        # 180° refocusing + Gss + Gfe readout + echo + Gpe rewind
+        rect_rf(ax_rf, t_ref, 1.0, RF_HW_180_REF, label="180°")
+        trap(ax_ss, t_ref-FLAIR_GSS_REF_OFFSET, GRAD_RISE_SM, FLAIR_GSS_REF_FLAT,
+             GRAD_RISE_SM, FLAIR_GSS_REF_AMP, c_ss)
+        trap(ax_fe, t_echo-FLAIR_GFE_READ_OFFSET, GRAD_RISE_MD, FLAIR_GFE_READ_FLAT,
+             GRAD_RISE_MD, FLAIR_GFE_READ_AMP, c_fe)
+        spin_echo(ax_sig, t_echo, 1.0, SIGNAL_HW_SE)
+        trap(ax_pe, t_echo+FLAIR_GPE_REW_OFFSET, GRAD_RISE_MD, GRAD_PE_FLAT,
+             GRAD_RISE_MD, -GRAD_PE_AMP, c_pe)
+        vmark(t_inv, c_rf); vmark(t_exc, c_rf); vmark(t_echo, "#AAAAAA")
+        ann_ti(t_inv, t_exc)
+        ann_te(t_exc, t_echo, y=FLAIR_ANN_TE_Y)
+        ann_tr(0.0, T_TOTAL)
+        axes[-1].set_xlim(0, T_TOTAL + FLAIR_XLIM_PAD)
+
+    # ================================================================
+    # bSSFP  — show 3 TR repetitions
+    # ================================================================
+    elif seq == "bSSFP":
+        tr_w = T_TOTAL / N_BSSFP_REPS
+        for i in range(N_BSSFP_REPS):
+            t0   = i * tr_w
+            tc   = t0 + tr_w * BSSFP_RF_OFF
+            sign = (-1)**i
+            amp  = BSSFP_TR1_AMP if i == 0 else 1.0
+            fa_lbl = f"{FA}°" if i == 0 else (f"−{FA}°" if sign < 0 else f"{FA}°")
+            sinc_rf(ax_rf, tc, sign * amp, RF_HW_BSSFP,
+                    label=fa_lbl if i < 2 else None)
+            trap(ax_ss, t0+BSSFP_GSS_PRE_OFFSET,  GRAD_RISE_XS, BSSFP_GSS_PRE_FLAT,  GRAD_RISE_XS, -BSSFP_SS_AMP, c_ss)
+            trap(ax_ss, t0+BSSFP_GSS_POST_OFFSET, GRAD_RISE_XS, BSSFP_GSS_POST_FLAT, GRAD_RISE_XS,  BSSFP_SS_AMP, c_ss)
+            trap(ax_pe, t0+BSSFP_GPE_PRE_OFFSET,  GRAD_RISE_XS, BSSFP_GPE_PRE_FLAT,  GRAD_RISE_XS,  BSSFP_PE_AMP*sign, c_pe)
+            trap(ax_pe, t0+BSSFP_GPE_POST_OFFSET, GRAD_RISE_XS, BSSFP_GPE_POST_FLAT, GRAD_RISE_XS, -BSSFP_PE_AMP*sign, c_pe)
+            trap(ax_fe, t0+BSSFP_GFE_PRE_OFFSET,  GRAD_RISE_XS, BSSFP_GFE_PRE_FLAT,  GRAD_RISE_XS, -BSSFP_FE_AMP, c_fe)
+            trap(ax_fe, t0+BSSFP_GFE_READ_OFFSET, GRAD_RISE_XS, BSSFP_GFE_READ_FLAT, GRAD_RISE_XS,  GRAD_FE_READ_AMP, c_fe)
+            trap(ax_fe, t0+BSSFP_GFE_POST_OFFSET, GRAD_RISE_XS, BSSFP_GFE_POST_FLAT, GRAD_RISE_XS, -BSSFP_FE_AMP, c_fe)
+            grad_echo(ax_sig, t0 + tr_w * BSSFP_SIG_OFF, amp * BSSFP_SIG_SCALE, SIGNAL_HW_BSSFP)
+            ax_rf.axvline(t0, color=BSSFP_VMARK_COLOR, linewidth=BASELINE_LINEWIDTH,
+                          linestyle=":")
+        ann_tr(0.0, tr_w)
+        ax_rf.text(T_TOTAL * 0.5, ANN_TR_Y, f"×{N_BSSFP_REPS} TRs shown",
+                   color="#777777", fontsize=BSSFP_FONT_REPS, ha="center")
+        axes[-1].set_xlim(0, T_TOTAL)
+
+    axes[-1].set_xticks([])
+    fig.text(0.5, 0.01, "Time  →", color="#555555",
+             fontsize=FONT_FOOTER, ha="center")
+    fig.text(0.5, 0.95, f"Pulse Sequence — {seq}", color="#CCCCCC",
+             fontsize=FONT_TITLE, ha="center", va="top", fontweight="bold")
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Brain phantom — BrainWeb with synthetic fallback
 # ---------------------------------------------------------------------------
@@ -313,7 +838,18 @@ with st.sidebar:
     if seq == "FSE":
         TE  = st.slider("TE eff. (ms)", 10, 300,  80, 5)
         ETL = st.slider("ETL",           1,  32,  16, 1)
+        st.caption("Pulse sequence diagram shows a maximum of 6 echoes for readability.")
         FA  = 90
+        # Derived FSE timing parameters
+        _fse_eff_idx = max(0, min(min(ETL, FSE_MAX_ECHOES_TO_SHOW) - 1,
+                                  round(TE / FSE_NOMINAL_ESP_MS) - 1))
+        _fse_esp_ms  = TE / (_fse_eff_idx + 1)
+        _fse_min_tr  = ETL * _fse_esp_ms
+        st.caption(f"Echo spacing (ESP) ≈ {_fse_esp_ms:.1f} ms")
+        if TR < _fse_min_tr:
+            st.error(f"TR too short: minimum TR for current ETL and TEeff is {int(_fse_min_tr)} ms")
+        if _fse_esp_ms < 10.0:
+            st.error("Echo spacing too short to be physically realistic — minimum ESP is approximately 10 ms")
 
     elif seq == "GRE":
         TE  = st.slider("TE (ms)",       2, 100,   5, 1)
@@ -692,6 +1228,12 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
                   bbox=dict(facecolor="black", alpha=0.5, edgecolor="none", pad=1))
         st.pyplot(fig_p, use_container_width=True)
         plt.close(fig_p)
+
+# --- Pulse sequence diagram (between phantom images and signal bars) ---
+_psd_fig = draw_pulse_sequence(seq, TR, TE, TI, FA, ETL)
+if _psd_fig is not None:
+    st.pyplot(_psd_fig, use_container_width=True)
+    plt.close(_psd_fig)
 
 # --- Row 2: Signal/SNR bars and relaxation curves ---
 col_bars, col_curves = st.columns([2, 3])
