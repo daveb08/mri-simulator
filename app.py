@@ -350,22 +350,33 @@ BSSFP_VMARK_COLOR       = "#444444"  # colour of TR-boundary vertical marker
 BSSFP_FONT_REPS         = FONT_ANN - 0.5  # font size for "×N TRs shown" label
 
 # ── Section 4: GRE constants ──────────────────────────────────────────────
+GRE_RF_HW               = 0.12  # GRE sinc RF pulse half-width (modern fast gradients)
+GRE_GSS_RISE            = 0.04  # GRE Gss slice-select rise/fall time (modern fast gradients)
+GRE_GSS_FLAT            = 0.24  # GRE Gss slice-select flat-top = 2×GRE_RF_HW so Gss centre ≡ RF centre
 GRE_RF_TC               = 0.6   # time-centre of excitation RF pulse
 GRE_TE_MIN              = 1.8   # minimum schematic TE position
 GRE_TE_MAX_MS           = 100.0 # TE value (ms) that maps to maximum schematic TE
 GRE_TE_RANGE            = 4.0   # schematic TE range (added to GRE_TE_MIN)
-GRE_GSS_T0              = 0.18  # start time of Gss slice-select main lobe
-GRE_GSS_REP_T0          = 0.92  # start time of Gss rephaser lobe
-GRE_GPE_T0              = 1.35  # start time of Gpe phase-encode lobe
-GRE_GPE_REWIND_OFFSET   = 0.62  # time after echo centre that Gpe rewind starts
-GRE_GFE_T0              = 1.35  # start time of Gfe dephase lobe
-GRE_GFE_READ_OFFSET     = 0.68  # how far before echo centre Gfe readout starts
+GRE_GSS_T0              = 0.44  # start time of Gss slice-select main lobe (flat-top starts at GRE_RF_TC − GRE_RF_HW)
+GRE_GSS_REP_T0          = 0.92  # start time of Gss rephaser lobe (legacy — now computed from gss_ss_end)
+GRE_GPE_T0              = 1.35  # start time of Gpe phase-encode lobe (legacy — now computed from gss_rep_end)
+GRE_GPE_REWIND_OFFSET   = 0.62  # time after echo centre that Gpe rewind starts (legacy — now computed)
+GRE_GFE_T0              = 1.35  # start time of Gfe dephase lobe (legacy — now computed)
+GRE_GFE_READ_OFFSET     = 0.68  # how far before echo centre Gfe readout starts (legacy — now computed)
 GRE_SIG_AMP             = 1.10  # gradient echo signal amplitude
 GRE_GHOST_AMP           = 0.65  # RF amplitude for ghost next-TR pulse
-GRE_GHOST_GSS_OFFSET    = 0.42  # how far before T_TOTAL the ghost Gss lobe starts
+GRE_GHOST_GSS_OFFSET    = 0.21  # how far before ghost RF centre the ghost Gss lobe starts (= GRE_RF_HW + GRE_GSS_RISE)
+GRE_XLIM_SCALE          = 0.75  # fraction of (T_TOTAL − GRE_RF_TC) used to place the ghost TR position
+GRE_GSS_DEFAULT_SLICE   = 5.0   # reference slice thickness (mm) at which Gss amplitude = GRE_GSS_REF_AMP
+GRE_GSS_REF_AMP         = 1.00  # Gss plateau amplitude at GRE_GSS_DEFAULT_SLICE (normalisation reference)
+GRE_GSS_MAX_AMP         = 1.90  # maximum Gss display amplitude at minimum slice thickness (< PSD_Y_MAX)
+GRE_GSS_REP_AMP         = -1.00 # Gss rephaser amplitude = Gss amplitude (same slew rate, shortest duration)
+GRE_GSS_REP_FLAT        = 0.06  # Gss rephaser flat-top: area = GRE_GSS_FLAT/2 + GRE_GSS_RISE/2 = 0.14
+GRE_GFE_REF_BW          = 200.0 # reference readout bandwidth (Hz/px) for Gfe amplitude normalisation
+GRE_GFE_REF_FOV         = 240.0 # reference FOV_read (mm) for Gfe amplitude normalisation
 
 
-def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL):
+def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=240):
     """Return a matplotlib Figure with an oscilloscope-style pulse sequence
     diagram for FSE, GRE, FLAIR, STIR, bSSFP.  Returns None for others."""
     if seq not in ("FSE", "GRE", "FLAIR", "STIR", "bSSFP"):
@@ -462,22 +473,57 @@ def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL):
     # GRE
     # ================================================================
     if seq == "GRE":
-        te_s = GRE_TE_MIN + (min(TE, GRE_TE_MAX_MS) / GRE_TE_MAX_MS) * GRE_TE_RANGE
-        sinc_rf(ax_rf, GRE_RF_TC, 1.0, RF_HW_EXCITE, label=f"{FA}°")
-        trap(ax_ss, GRE_GSS_T0,          GRAD_RISE,        GRAD_SS_FLAT,      GRAD_RISE,        GRAD_SS_AMP,      c_ss)
-        trap(ax_ss, GRE_GSS_REP_T0,      GRAD_SS_REP_RISE, GRAD_SS_REP_FLAT,  GRAD_SS_REP_RISE, GRAD_SS_REP_AMP,  c_ss)
-        trap(ax_pe, GRE_GPE_T0,          GRAD_RISE,        GRAD_PE_FLAT,      GRAD_RISE,        GRAD_PE_AMP,      c_pe)
-        trap(ax_pe, te_s+GRE_GPE_REWIND_OFFSET, GRAD_RISE, GRAD_PE_FLAT,      GRAD_RISE,       -GRAD_PE_AMP,      c_pe)
-        trap(ax_fe, GRE_GFE_T0,          GRAD_RISE,        GRAD_FE_DEP_FLAT,  GRAD_RISE,        GRAD_FE_DEP_AMP,  c_fe)
-        trap(ax_fe, te_s-GRE_GFE_READ_OFFSET, GRAD_RISE,   GRAD_FE_READ_FLAT, GRAD_RISE,        GRAD_FE_READ_AMP, c_fe)
+        # ── Constant-only derived quantities (all independent of TE slider) ──────────
+        gfe_ro_hw    = GRAD_RISE + GRAD_FE_READ_FLAT / 2                        # readout half-width (rise + half flat-top)
+        gpe_hw       = GRAD_RISE + GRAD_PE_FLAT / 2                             # PE lobe half-width
+        gfe_dep_rise = abs(GRAD_FE_DEP_AMP) / GRAD_FE_READ_AMP * GRAD_RISE     # prephaser ramp — same slew rate as readout
+        gss_ss_end   = GRE_GSS_T0 + GRE_GSS_RISE + GRE_GSS_FLAT + GRE_GSS_RISE
+        gss_rep_rise = abs(GRE_GSS_REP_AMP) / GRE_GSS_REF_AMP * GRE_GSS_RISE   # rephaser ramp — same slew rate as SS lobe
+        gss_rep_end  = gss_ss_end + gss_rep_rise + GRE_GSS_REP_FLAT + gss_rep_rise
+        _prep_w      = gfe_dep_rise + GRAD_FE_DEP_FLAT + gfe_dep_rise
+        _te_s_min    = gss_rep_end + _prep_w + gfe_ro_hw
+        _te_min_ms   = int(np.ceil((_te_s_min - GRE_TE_MIN) * GRE_TE_MAX_MS / GRE_TE_RANGE))
+        # ── TE-dependent quantities — clamped to _te_s_min so diagram freezes below minimum ──
+        te_s = max(_te_s_min, GRE_TE_MIN + (min(TE, GRE_TE_MAX_MS) / GRE_TE_MAX_MS) * GRE_TE_RANGE)
+        gfe_ro_start = te_s - gfe_ro_hw
+        gfe_prep_t0  = max(gss_rep_end, gfe_ro_start - gfe_dep_rise - GRAD_FE_DEP_FLAT - gfe_dep_rise)
+        gpe_enc_t0   = gss_ss_end   # Gpe encode overlaps Gss rephaser (different axes) to minimise TE
+        gpe_enc_c    = gpe_enc_t0 + gpe_hw
+        gpe_rew_c    = 2 * te_s - gpe_enc_c
+        gpe_rew_t0   = gpe_rew_c - gpe_hw
+        # ── Slice-thickness-scaled Gss amplitudes (normalized: max at slice=1mm = GRE_GSS_MAX_AMP) ──
+        _gss_scale  = GRE_GSS_MAX_AMP / (GRE_GSS_REF_AMP * slice_mm)
+        gss_amp     = GRE_GSS_REF_AMP  * _gss_scale   # = GRE_GSS_MAX_AMP / slice_mm
+        gss_rep_amp = GRE_GSS_REP_AMP  * _gss_scale   # rephaser scales identically; area ratio preserved
+        # ── BW/FOV_read-scaled Gfe amplitudes (Gfe ∝ BW/FOV_read) ───────────────
+        _gfe_scale  = (BW / GRE_GFE_REF_BW) * (GRE_GFE_REF_FOV / FOV_read)
+        gfe_amp     = GRAD_FE_READ_AMP * _gfe_scale
+        gfe_dep_amp = GRAD_FE_DEP_AMP  * _gfe_scale   # prephaser scales identically
+        # ── Ghost position and x-axis limits ─────────────────────────────────────
+        gre_ghost_x = GRE_RF_TC + (T_TOTAL - GRE_RF_TC) * GRE_XLIM_SCALE
+        gpe_rew_end = gpe_rew_t0 + GRAD_RISE + GRAD_PE_FLAT + GRAD_RISE
+        ghost_end   = gre_ghost_x - GRE_GHOST_GSS_OFFSET + GRE_GSS_RISE + GRE_GSS_FLAT + GRE_GSS_RISE
+        xlim_right  = max(ghost_end, gpe_rew_end) + 0.3
+        sinc_rf(ax_rf, GRE_RF_TC, 1.0, GRE_RF_HW, label=f"{FA}°")
+        trap(ax_ss, GRE_GSS_T0,  GRE_GSS_RISE,  GRE_GSS_FLAT,      GRE_GSS_RISE,  gss_amp,         c_ss)
+        trap(ax_ss, gss_ss_end,  gss_rep_rise,  GRE_GSS_REP_FLAT,  gss_rep_rise,  gss_rep_amp,     c_ss)
+        trap(ax_pe, gpe_enc_t0,  GRAD_RISE,     GRAD_PE_FLAT,      GRAD_RISE,     GRAD_PE_AMP,     c_pe)
+        trap(ax_pe, gpe_rew_t0,  GRAD_RISE,     GRAD_PE_FLAT,      GRAD_RISE,    -GRAD_PE_AMP,     c_pe)
+        trap(ax_fe, gfe_prep_t0, gfe_dep_rise,  GRAD_FE_DEP_FLAT,  gfe_dep_rise,  gfe_dep_amp, c_fe)
+        trap(ax_fe, gfe_ro_start,GRAD_RISE,     GRAD_FE_READ_FLAT, GRAD_RISE,     gfe_amp,     c_fe)
         grad_echo(ax_sig, te_s, GRE_SIG_AMP, SIGNAL_HW_GRE)
-        sinc_rf(ax_rf, T_TOTAL, GRE_GHOST_AMP, RF_HW_EXCITE, col=c_rf + "55")
-        trap(ax_ss, T_TOTAL-GRE_GHOST_GSS_OFFSET, GRAD_RISE, GRAD_SS_FLAT, GRAD_RISE,
-             GRAD_SS_AMP, c_ss + "44")
+        sinc_rf(ax_rf, gre_ghost_x, GRE_GHOST_AMP, GRE_RF_HW, col=c_rf + "55")
+        trap(ax_ss, gre_ghost_x - GRE_GHOST_GSS_OFFSET, GRE_GSS_RISE, GRE_GSS_FLAT, GRE_GSS_RISE,
+             gss_amp, c_ss + "44")
+        if TE < _te_min_ms:
+            fig.text(0.5, 0.5,
+                     f"⚠  TE too short: minimum achievable TE is {_te_min_ms} ms",
+                     color="#FF4444", fontsize=6.5, ha="center", va="center",
+                     bbox=dict(facecolor="#1a1a1a", alpha=0.9, edgecolor="#FF4444", boxstyle="round,pad=0.6"))
         vmark(GRE_RF_TC, c_rf); vmark(te_s, "#AAAAAA")
-        ann_te(GRE_RF_TC, te_s)
-        ann_tr(0.0, T_TOTAL)
-        axes[-1].set_xlim(0, T_TOTAL + 0.6)
+        ann_te(GRE_RF_TC, te_s, draw_axes=(ax_sig,))
+        ann_tr(GRE_RF_TC, gre_ghost_x)
+        axes[-1].set_xlim(0, xlim_right)
 
     # ================================================================
     # FSE
@@ -855,6 +901,15 @@ with st.sidebar:
         TE  = st.slider("TE (ms)",       2, 100,   5, 1)
         FA  = st.slider("Flip Angle (°)",1,  90,  30, 1)
         ETL = 1
+        _gre_gss_end  = GRE_GSS_T0 + GRE_GSS_RISE + GRE_GSS_FLAT + GRE_GSS_RISE
+        _gre_rep_rise = abs(GRE_GSS_REP_AMP) / GRE_GSS_REF_AMP * GRE_GSS_RISE
+        _gre_rep_end  = _gre_gss_end + _gre_rep_rise + GRE_GSS_REP_FLAT + _gre_rep_rise
+        _gre_dep_rise = abs(GRAD_FE_DEP_AMP) / GRAD_FE_READ_AMP * GRAD_RISE
+        _gre_te_min_ms = int(np.ceil((_gre_rep_end + 2*_gre_dep_rise + GRAD_FE_DEP_FLAT
+                                      + GRAD_RISE + GRAD_FE_READ_FLAT/2 - GRE_TE_MIN)
+                                     * GRE_TE_MAX_MS / GRE_TE_RANGE))
+        if TE < _gre_te_min_ms:
+            st.error(f"TE too short: minimum achievable TE is {_gre_te_min_ms:.0f} ms")
 
     elif seq == "FLAIR":
         TI  = st.slider("TI (ms)",     500, 4000, 2500,  50)
@@ -1230,7 +1285,7 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
         plt.close(fig_p)
 
 # --- Pulse sequence diagram (between phantom images and signal bars) ---
-_psd_fig = draw_pulse_sequence(seq, TR, TE, TI, FA, ETL)
+_psd_fig = draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=slice_mm, BW=BW, FOV_read=FOV_read)
 if _psd_fig is not None:
     st.pyplot(_psd_fig, use_container_width=True)
     plt.close(_psd_fig)

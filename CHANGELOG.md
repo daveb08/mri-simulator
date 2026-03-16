@@ -120,3 +120,17 @@ All notable changes to `app.py` are documented here.
 - **Vline colour bug**: invalid hex colour `"#F6E606EC"` on the 90° excitation vline replaced with `"#555555"`.
 - **`ann_te` helper**: added `draw_axes` parameter so the TEeff arrow can be restricted to specific subplot rows (signal row only for FSE).
 - **`ann_tr` helper**: added `ax` parameter so the TR arrow can be drawn on any row rather than always on `ax_rf`.
+
+---
+
+## Session 8 — GRE Pulse Sequence Diagram: Physics Accuracy & Timing Improvements
+
+### Added
+- **Gss amplitude normalisation** (`GRE_GSS_MAX_AMP`): Gss and rephaser amplitudes now scale as `GRE_GSS_MAX_AMP / slice_mm`, capped at `GRE_GSS_MAX_AMP = 1.90` at minimum slice thickness (≈ 95 % of `PSD_Y_MAX`), making slice-thickness changes visually apparent across the full slider range.
+- **Gfe readout amplitude scaling** (`GRE_GFE_REF_BW`, `GRE_GFE_REF_FOV`): Gfe readout and prephaser amplitudes scale as `BW / FOV_read`, normalised to current amplitude at reference values (200 Hz/px, 240 mm). Prephaser scales identically so the half-area echo-centring relationship is always preserved; the scale factor cancels in the `gfe_dep_rise` formula so TE_min is unaffected. `draw_pulse_sequence` signature extended with `BW=200, FOV_read=240`.
+- **GRE-specific rephaser constants** (`GRE_GSS_REP_AMP = -1.00`, `GRE_GSS_REP_FLAT = 0.06`): rephaser amplitude raised to match the Gss main lobe (same slew rate, rise time = `GRE_GSS_RISE`); flat-top shortened so that rephaser area equals exactly the area of the second half of the Gss lobe (`GRE_GSS_FLAT/2 + GRE_GSS_RISE/2 = 0.14`). Total rephaser duration reduced from 0.32 → 0.14 schematic units. Constants are GRE-specific and do not affect the FSE rephaser.
+
+### Fixed
+- **Gss / RF centre misalignment**: `GRE_GSS_FLAT` widened from 0.18 → 0.24 (= `2 × GRE_RF_HW`) so the centre of the Gss main lobe coincides exactly with `GRE_RF_TC`. The Gss flat-top now spans precisely from RF start to RF end.
+- **Spurious TE annotation arrow on Gfe row**: `ann_te` for GRE now passes `draw_axes=(ax_sig,)` so the TE double-headed arrow is drawn only on the Signal row, not on the Gfe row.
+- **Gpe encode overlaps Gss rephaser**: `gpe_enc_t0` moved from `gss_rep_end` to `gss_ss_end` so the phase-encode lobe plays simultaneously with the slice-select rephaser (different gradient axes), pulling the rewind lobe earlier and further reducing minimum TE.
