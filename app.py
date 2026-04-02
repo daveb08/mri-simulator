@@ -6,6 +6,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.transforms as mtransforms
 import streamlit as st
 import anthropic
 from scipy.ndimage import gaussian_filter
@@ -329,29 +331,28 @@ FLAIR_NOMINAL_ESP_MS    = 25.0  # nominal ESP (ms) used to map TEeff slider → 
 
 # ── Section 3: bSSFP constants ────────────────────────────────────────────
 N_BSSFP_REPS            = 3     # number of TR repetitions shown
-BSSFP_RF_OFF            = 0.20  # RF centre as fraction of tr_w
-BSSFP_SIG_OFF           = 0.62  # echo centre as fraction of tr_w
-BSSFP_SS_AMP            = 0.70  # Gss balanced lobe amplitude
-BSSFP_PE_AMP            = 0.55  # Gpe balanced lobe amplitude
-BSSFP_FE_AMP            = 0.65  # Gfe prephase / rewind lobe amplitude
+BSSFP_RF_OFF            = 0.20  # RF centre as fraction of tr_w from each TR start
+BSSFP_SIG_OFF           = 0.70  # echo centre as fraction of tr_w = RF_OFF + 0.50 (TE = TR/2)
+BSSFP_SS_AMP            = 0.70  # Gss lobe amplitude (all three lobes share this amplitude)
+BSSFP_PE_AMP            = 0.55  # Gpe encode / rewind lobe amplitude
+BSSFP_FE_AMP            = 0.65  # Gfe prephaser / rewinder lobe amplitude
 BSSFP_TR1_AMP           = 0.65  # RF amplitude for first (transient) TR
 BSSFP_SIG_SCALE         = 0.78  # signal amplitude scale relative to RF amplitude
-BSSFP_GSS_PRE_OFFSET    = 0.04  # t0 of Gss pre-pulse within tr_w
-BSSFP_GSS_PRE_FLAT      = 0.24  # flat-top of Gss pre-pulse lobe
-BSSFP_GSS_POST_OFFSET   = 0.38  # t0 of Gss post-pulse (balanced) within tr_w
-BSSFP_GSS_POST_FLAT     = 0.24  # flat-top of Gss post-pulse lobe
-BSSFP_GPE_PRE_OFFSET    = 0.62  # t0 of Gpe pre-readout lobe within tr_w
-BSSFP_GPE_PRE_FLAT      = 0.20  # flat-top of Gpe pre-readout lobe
-BSSFP_GPE_POST_OFFSET   = 0.90  # t0 of Gpe post-readout (rewind) lobe within tr_w
-BSSFP_GPE_POST_FLAT     = 0.20  # flat-top of Gpe rewind lobe
-BSSFP_GFE_PRE_OFFSET    = 0.62  # t0 of Gfe prephase lobe within tr_w
-BSSFP_GFE_PRE_FLAT      = 0.20  # flat-top of Gfe prephase lobe
-BSSFP_GFE_READ_OFFSET   = 0.90  # t0 of Gfe readout lobe within tr_w
-BSSFP_GFE_READ_FLAT     = 0.36  # flat-top of Gfe readout lobe
-BSSFP_GFE_POST_OFFSET   = 1.38  # t0 of Gfe rewind lobe within tr_w
-BSSFP_GFE_POST_FLAT     = 0.20  # flat-top of Gfe rewind lobe
 BSSFP_VMARK_COLOR       = "#444444"  # colour of TR-boundary vertical marker
 BSSFP_FONT_REPS         = FONT_ANN - 0.5  # font size for "×N TRs shown" label
+# Gss balanced 3-lobe geometry (pre-phaser → slice-select → re-phaser, net moment = 0)
+BSSFP_GSS_MAIN_FLAT     = 0.20  # flat-top of SS main lobe — lobe is centred on RF pulse
+BSSFP_GSS_HALFPRE_FLAT  = 0.075 # flat-top of pre/rephaser — area = SS_area/2 at same amplitude → net Gss = 0
+# Gfe balanced 3-lobe geometry (neg before RF, neg after RF, readout at TE=TR/2, net moment = 0)
+#   neg lobe amp = BSSFP_FE_AMP, flat = BSSFP_GSS_HALFPRE_FLAT (same timing as Gss pre/rephaser)
+#   balance: BSSFP_GFE_RO_FLAT = 2×BSSFP_FE_AMP×(BSSFP_GSS_HALFPRE_FLAT+GRAD_RISE_XS)/GRAD_FE_READ_AMP − GRAD_RISE_XS
+BSSFP_GFE_RO_FLAT       = 0.1125 # flat-top of Gfe readout lobe — derived so 2×neg_area = readout_area → net Gfe = 0
+BSSFP_GFE_PERIPH_FLAT   = 0.22  # (retained for reference; superseded by the neg-lobe/readout balance above)
+# Gpe balanced bipolar geometry (encode → rewind, net moment = 0)
+BSSFP_GPE_ENC_FLAT      = 0.22  # flat-top of Gpe encode and rewind lobes — equal areas → net Gpe = 0
+# 'Repeating unit' dashed rectangle styling
+BSSFP_REPEAT_COLOR      = "#6688AA"  # border colour of 'Repeating unit' rectangle
+BSSFP_RECT_LINEWIDTH    = 0.8   # linewidth of 'Repeating unit' rectangle
 
 # ── Section 4: GRE constants ──────────────────────────────────────────────
 GRE_RF_HW               = 0.12  # GRE sinc RF pulse half-width (modern fast gradients)
@@ -807,31 +808,93 @@ def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=2
         axes[-1].set_xlim(0, t_diagram_end + FSE_XLIM_PAD)
 
     # ================================================================
-    # bSSFP  — show 3 TR repetitions
+    # bSSFP  — 3 TR repetitions, all gradient moments balanced to zero
     # ================================================================
     elif seq == "bSSFP":
         tr_w = T_TOTAL / N_BSSFP_REPS
+
         for i in range(N_BSSFP_REPS):
             t0   = i * tr_w
-            tc   = t0 + tr_w * BSSFP_RF_OFF
-            sign = (-1)**i
+            tc   = t0 + tr_w * BSSFP_RF_OFF          # RF centre
+            te_c = t0 + tr_w * BSSFP_SIG_OFF          # echo centre: TE = TR/2 after RF
+            sign = (-1) ** i
             amp  = BSSFP_TR1_AMP if i == 0 else 1.0
-            fa_lbl = f"{FA}°" if i == 0 else (f"−{FA}°" if sign < 0 else f"{FA}°")
-            sinc_rf(ax_rf, tc, sign * amp, RF_HW_BSSFP,
-                    label=fa_lbl if i < 2 else None)
-            trap(ax_ss, t0+BSSFP_GSS_PRE_OFFSET,  GRAD_RISE_XS, BSSFP_GSS_PRE_FLAT,  GRAD_RISE_XS, -BSSFP_SS_AMP, c_ss)
-            trap(ax_ss, t0+BSSFP_GSS_POST_OFFSET, GRAD_RISE_XS, BSSFP_GSS_POST_FLAT, GRAD_RISE_XS,  BSSFP_SS_AMP, c_ss)
-            trap(ax_pe, t0+BSSFP_GPE_PRE_OFFSET,  GRAD_RISE_XS, BSSFP_GPE_PRE_FLAT,  GRAD_RISE_XS,  BSSFP_PE_AMP*sign, c_pe)
-            trap(ax_pe, t0+BSSFP_GPE_POST_OFFSET, GRAD_RISE_XS, BSSFP_GPE_POST_FLAT, GRAD_RISE_XS, -BSSFP_PE_AMP*sign, c_pe)
-            trap(ax_fe, t0+BSSFP_GFE_PRE_OFFSET,  GRAD_RISE_XS, BSSFP_GFE_PRE_FLAT,  GRAD_RISE_XS, -BSSFP_FE_AMP, c_fe)
-            trap(ax_fe, t0+BSSFP_GFE_READ_OFFSET, GRAD_RISE_XS, BSSFP_GFE_READ_FLAT, GRAD_RISE_XS,  GRAD_FE_READ_AMP, c_fe)
-            trap(ax_fe, t0+BSSFP_GFE_POST_OFFSET, GRAD_RISE_XS, BSSFP_GFE_POST_FLAT, GRAD_RISE_XS, -BSSFP_FE_AMP, c_fe)
-            grad_echo(ax_sig, t0 + tr_w * BSSFP_SIG_OFF, amp * BSSFP_SIG_SCALE, SIGNAL_HW_BSSFP)
-            ax_rf.axvline(t0, color=BSSFP_VMARK_COLOR, linewidth=BASELINE_LINEWIDTH,
-                          linestyle=":")
-        ann_tr(0.0, tr_w)
-        ax_rf.text(T_TOTAL * 0.5, ANN_TR_Y, f"×{N_BSSFP_REPS} TRs shown",
+            fa_lbl = f"+{FA}\u00b0" if sign > 0 else f"\u2212{FA}\u00b0"
+
+            # RF — sinc, alternating phase (+FA, −FA, +FA, …)
+            sinc_rf(ax_rf, tc, sign * amp, RF_HW_BSSFP, label=fa_lbl)
+
+            # ── Gss: pre-phaser(−) → slice-select(+) → re-phaser(−) ──────────
+            #   prephaser area = SS_area/2, rephaser area = SS_area/2
+            #   net moment: −½ + 1 − ½ = 0
+            t_ss_c0    = tc - GRAD_RISE_XS - BSSFP_GSS_MAIN_FLAT / 2   # start of SS main lobe
+            t_ss_end   = tc + GRAD_RISE_XS + BSSFP_GSS_MAIN_FLAT / 2   # end   of SS main lobe
+            dur_pre_ss = 2 * GRAD_RISE_XS + BSSFP_GSS_HALFPRE_FLAT
+            t_ss_pre0  = t_ss_c0 - dur_pre_ss                            # start of prephaser
+            trap(ax_ss, t_ss_pre0, GRAD_RISE_XS, BSSFP_GSS_HALFPRE_FLAT, GRAD_RISE_XS, -BSSFP_SS_AMP, c_ss)
+            trap(ax_ss, t_ss_c0,   GRAD_RISE_XS, BSSFP_GSS_MAIN_FLAT,    GRAD_RISE_XS,  BSSFP_SS_AMP, c_ss)
+            trap(ax_ss, t_ss_end,  GRAD_RISE_XS, BSSFP_GSS_HALFPRE_FLAT, GRAD_RISE_XS, -BSSFP_SS_AMP, c_ss)
+
+            # ── Gfe: neg(−) simultaneous with Gss pre-phaser,
+            #         neg(−) simultaneous with Gss re-phaser,
+            #         readout(+) centred at TE = TR/2
+            #   area_neg1 + area_neg2 = readout_area → net Gfe moment = 0
+            t_ro_c0 = te_c - GRAD_RISE_XS - BSSFP_GFE_RO_FLAT / 2    # start of readout lobe
+            trap(ax_fe, t_ss_pre0, GRAD_RISE_XS, BSSFP_GSS_HALFPRE_FLAT, GRAD_RISE_XS, -BSSFP_FE_AMP,     c_fe)
+            trap(ax_fe, t_ss_end,  GRAD_RISE_XS, BSSFP_GSS_HALFPRE_FLAT, GRAD_RISE_XS, -BSSFP_FE_AMP,     c_fe)
+            trap(ax_fe, t_ro_c0,   GRAD_RISE_XS, BSSFP_GFE_RO_FLAT,      GRAD_RISE_XS,  GRAD_FE_READ_AMP, c_fe)
+
+            # ── Gpe: encode(−) → rewind(+) bipolar pair (net moment = 0) ─────
+            #   coincident with Gss pre/rephaser; first lobe negative, second positive
+            trap(ax_pe, t_ss_pre0, GRAD_RISE_XS, BSSFP_GPE_ENC_FLAT, GRAD_RISE_XS, -BSSFP_PE_AMP * sign, c_pe)
+            trap(ax_pe, t_ss_end,  GRAD_RISE_XS, BSSFP_GPE_ENC_FLAT, GRAD_RISE_XS,  BSSFP_PE_AMP * sign, c_pe)
+
+            # Signal: gradient echo centred at TE = TR/2
+            grad_echo(ax_sig, te_c, amp * BSSFP_SIG_SCALE, SIGNAL_HW_BSSFP)
+
+            # TR boundary dashed marker
+            ax_rf.axvline(t0, color=BSSFP_VMARK_COLOR,
+                          linewidth=BASELINE_LINEWIDTH, linestyle=":")
+
+        # ── Annotations ──────────────────────────────────────────────────────
+        tc0  = tr_w * BSSFP_RF_OFF               # centre of 1st RF pulse
+        te_c0 = tr_w * BSSFP_SIG_OFF             # centre of 1st Gfe readout (TE = TR/2)
+        tc1  = tr_w + tc0                         # centre of 2nd RF pulse
+
+        # TR arrow: centre of 1st RF → centre of 2nd RF
+        # Drawn on ax_ss (top of Gss row) so it sits between the RF and Gss rows
+        # and does not overlap the flip-angle text labels in ax_rf.
+        ann_tr(tc0, tc1, ax=ax_ss)
+
+        # TE = TR/2 arrow on Gfe row: 1st RF centre → 1st readout centre
+        # Label is placed ABOVE the arrow to keep it within the axes clip region.
+        ax_fe.annotate("", xy=(te_c0, ANN_TE_Y), xytext=(tc0, ANN_TE_Y),
+                       arrowprops=dict(arrowstyle="<->", color="#AAAAAA",
+                                       lw=ARROW_LINEWIDTH))
+        ax_fe.text((tc0 + te_c0) / 2, ANN_TE_Y + 0.15,
+                   "TE = TR/2", color="#AAAAAA", fontsize=FONT_ANN,
+                   ha="center", va="bottom")
+
+        # Dashed 'Repeating unit' rectangle spanning all rows around 2nd TR
+        _trans = mtransforms.blended_transform_factory(
+            ax_rf.transData, fig.transFigure
+        )
+        rep_rect = mpatches.Rectangle(
+            (tr_w, PSD_MARGIN_BOT), tr_w,
+            PSD_MARGIN_TOP - PSD_MARGIN_BOT,
+            transform=_trans, clip_on=False,
+            linewidth=BSSFP_RECT_LINEWIDTH, edgecolor=BSSFP_REPEAT_COLOR,
+            facecolor="none", linestyle="--", zorder=10
+        )
+        fig.add_artist(rep_rect)
+        ax_rf.text(1.5 * tr_w, ANN_TR_Y + 0.10, "Repeating unit",
+                   color=BSSFP_REPEAT_COLOR, fontsize=FONT_ANN,
+                   ha="center", va="center", fontstyle="italic")
+
+        # ×N TRs label (placed in 3rd TR period to avoid crowding)
+        ax_rf.text(2.5 * tr_w, ANN_TR_Y, f"\u00d7{N_BSSFP_REPS} TRs shown",
                    color="#777777", fontsize=BSSFP_FONT_REPS, ha="center")
+
         axes[-1].set_xlim(0, T_TOTAL)
 
     axes[-1].set_xticks([])
@@ -1075,8 +1138,8 @@ with st.sidebar:
     if seq == "EPI":
         ETL = phase_matrix  # single-shot EPI: all phase encodes in one TR, so scan time = TR × NEX
 
-    FOV_read  = st.slider("FOV Read (mm)",  180, 400, 240, 10)
-    FOV_phase = st.slider("FOV Phase (mm)", 180, 400, 240, 10)
+    FOV_read  = st.slider("FOV Read (mm)",  180, 400, 400, 10)
+    FOV_phase = st.slider("FOV Phase (mm)", 180, 400, 400, 10)
     st.caption(
         f"Frequency pixel: {FOV_read / freq_matrix:.2f} mm  |  "
         f"Phase pixel: {FOV_phase / phase_matrix:.2f} mm"
