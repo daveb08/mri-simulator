@@ -61,6 +61,69 @@ TISSUES = {
     "Fat": {"T1": 371,   "T2": 133,  "T2s": 17,  "PD": 1.00, "color": "#FFD966", "ADC": 0.00050},
 }
 
+# ---------------------------------------------------------------------------
+# Field-strength-dependent tissue parameters
+# ---------------------------------------------------------------------------
+# T1 and T2 values are drawn from the following sources:
+#   Bottomley et al., Med. Phys. 11(4), 1984  — empirical power-law scaling
+#     T1 ∝ B0^α  (α ≈ 0.38 for WM/GM, ~0 for CSF, ~0.05 for fat)
+#   O'Reilly & Webb, Magn. Reson. Med. 87(1), 2022 — in-vivo 0.064 T measurements
+#   Stanisz et al., Magn. Reson. Med. 54(3), 2005  — reference values at 3 T
+#
+# T2* values are not tabulated at low field in those references.  They are
+# estimated here as min(T2, T2s_3T × (3.0 / B0)), reflecting that susceptibility
+# broadening decreases at lower field (T2* → T2 as B0 → 0).
+#
+# All other tissue properties (PD, colour, ADC) are field-strength-independent
+# and are inherited from the base TISSUES dict.
+FIELD_STRENGTH_TISSUES = {
+    "0.064T": {
+        # O'Reilly & Webb MRM 2022 — in-vivo brain at 0.064 T (Halcyon-class ULF)
+        "WM":  {"T1": 275,  "T2": 92,   "T2s": 92},    # T2* ≈ T2 (negligible susceptibility)
+        "GM":  {"T1": 327,  "T2": 101,  "T2s": 101},
+        "CSF": {"T1": 4000, "T2": 1584, "T2s": 1584},
+        "Fat": {"T1": 100,  "T2": 90,   "T2s": 90},
+    },
+    "0.5T": {
+        # Bottomley et al. Med Phys 1984 empirical scaling from 3 T reference
+        "WM":  {"T1": 400,  "T2": 90,   "T2s": 90},    # T2* capped at T2 (26 × 6 = 156 > 90)
+        "GM":  {"T1": 570,  "T2": 100,  "T2s": 100},   # T2* capped at T2 (33 × 6 = 198 > 100)
+        "CSF": {"T1": 4000, "T2": 1800, "T2s": 1800},  # T2* capped at T2
+        "Fat": {"T1": 180,  "T2": 85,   "T2s": 85},    # T2* capped at T2
+    },
+    "1.0T": {
+        # Bottomley et al. Med Phys 1984
+        "WM":  {"T1": 530,  "T2": 88,   "T2s": 78},    # min(88, 26×3=78)
+        "GM":  {"T1": 800,  "T2": 95,   "T2s": 95},    # min(95, 33×3=99) → 95
+        "CSF": {"T1": 4000, "T2": 2000, "T2s": 1500},  # min(2000, 500×3=1500)
+        "Fat": {"T1": 220,  "T2": 80,   "T2s": 51},    # min(80, 17×3=51)
+    },
+    "1.5T": {
+        # Stanisz et al. MRM 2005 / Bottomley et al. Med Phys 1984
+        "WM":  {"T1": 650,  "T2": 80,   "T2s": 52},    # min(80, 26×2=52)
+        "GM":  {"T1": 1200, "T2": 90,   "T2s": 66},    # min(90, 33×2=66)
+        "CSF": {"T1": 4000, "T2": 2000, "T2s": 1000},  # min(2000, 500×2=1000)
+        "Fat": {"T1": 250,  "T2": 70,   "T2s": 34},    # min(70, 17×2=34)
+    },
+    "3.0T": {
+        # Stanisz et al. MRM 2005 (reference field strength)
+        "WM":  {"T1": 832,  "T2": 80,   "T2s": 26},
+        "GM":  {"T1": 1331, "T2": 80,   "T2s": 33},
+        "CSF": {"T1": 4000, "T2": 2000, "T2s": 500},
+        "Fat": {"T1": 365,  "T2": 60,   "T2s": 17},
+    },
+}
+
+# SNR scales approximately linearly with B0 (for a given coil / bandwidth).
+# Factors below represent SNR relative to 3 T (= 1.000).
+FIELD_SNR_SCALE = {
+    "0.064T": 0.021,
+    "0.5T":   0.167,
+    "1.0T":   0.333,
+    "1.5T":   0.500,
+    "3.0T":   1.000,
+}
+
 SNR_SCALE = 200.0
 
 # ---------------------------------------------------------------------------
@@ -1004,6 +1067,16 @@ _ga4_events = []
 # Position (x/y/z sliders that drive the crosshair and plane selection).
 with st.sidebar:
     st.markdown("### MRI Parameters")
+
+    st.markdown("**Field Strength**")
+    field_strength = st.radio(
+        "",
+        ["0.064T", "0.5T", "1.0T", "1.5T", "3.0T"],
+        index=4,          # default: 3.0T
+        horizontal=True,
+        key="field_strength",
+    )
+
     st.markdown("**Sequence**")
     seq = st.radio("", ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI (single-shot)"],
                    horizontal=True)
@@ -1274,6 +1347,24 @@ if _ga4_events:
     st.components.v1.html(f"<script>{_js}</script>", height=0)
 
 # ---------------------------------------------------------------------------
+# Apply field-strength-dependent tissue parameters
+# ---------------------------------------------------------------------------
+# Override the module-level TISSUES dict with values for the selected B0.
+# Only T1, T2, and T2s change with field strength; PD, colour, and ADC are
+# field-strength-independent and are inherited from the base TISSUES dict.
+_fs_params = FIELD_STRENGTH_TISSUES[field_strength]
+for _t in TISSUES:
+    TISSUES[_t]["T1"]  = _fs_params[_t]["T1"]
+    TISSUES[_t]["T2"]  = _fs_params[_t]["T2"]
+    TISSUES[_t]["T2s"] = _fs_params[_t]["T2s"]
+
+# Effective noise reference scaled by inverse of field-strength SNR factor.
+# At 3 T (scale = 1.000) this equals NOISE_REF exactly.
+# At lower fields (smaller scale) noise increases, reducing SNR.
+_field_snr_scale  = FIELD_SNR_SCALE[field_strength]
+_noise_ref_scaled = NOISE_REF / _field_snr_scale
+
+# ---------------------------------------------------------------------------
 # Compute signals and SNR
 # ---------------------------------------------------------------------------
 # Three-step Signal / Noise / SNR calculation — no circular dependencies
@@ -1332,9 +1423,10 @@ _vol_scale = voxel_vol / _ref_vox
 signals    = {t: round(base_signals[t] * _vol_scale * np.sqrt(pf_fraction), 2) for t in base_signals}
 
 # STEP 2 — System noise floor.
-# Depends ONLY on BW and NEX — Npartitions has no influence whatsoever.
-# Never changes with FOV, matrix, slice, Npartitions, TR, TE, TI, or flip angle.
-noise_floor = round(NOISE_REF * np.sqrt(BW / BW_REF) / np.sqrt(NEX / NEX_REF), 2)
+# Depends ONLY on BW, NEX, and field strength — not on FOV, matrix, slice,
+# Npartitions, TR, TE, TI, or flip angle.
+# _noise_ref_scaled incorporates the B0-dependent SNR penalty (SNR ∝ B0).
+noise_floor = round(_noise_ref_scaled * np.sqrt(BW / BW_REF) / np.sqrt(NEX / NEX_REF), 2)
 
 # STEP 3 — SNR = Signal / Noise, derived directly with no other dependencies.
 # signals and noise_floor are pre-rounded to 2 dp so displayed values are exact inputs.
@@ -1372,8 +1464,10 @@ vmax = wl_level + wl_window / 2
 # Page title
 # ---------------------------------------------------------------------------
 # Centred heading displayed at the top of the main content area.
-st.markdown("<h3 style='text-align: center;'>MRI Simulator — Brain (3T)</h3>",
-            unsafe_allow_html=True)
+st.markdown(
+    f"<h3 style='text-align: center;'>MRI Simulator — Brain ({field_strength})</h3>",
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------------------
 # Main layout: three planes (row 1) + bars/curves (row 2)

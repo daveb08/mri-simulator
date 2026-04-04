@@ -134,3 +134,25 @@ All notable changes to `app.py` are documented here.
 - **Gss / RF centre misalignment**: `GRE_GSS_FLAT` widened from 0.18 → 0.24 (= `2 × GRE_RF_HW`) so the centre of the Gss main lobe coincides exactly with `GRE_RF_TC`. The Gss flat-top now spans precisely from RF start to RF end.
 - **Spurious TE annotation arrow on Gfe row**: `ann_te` for GRE now passes `draw_axes=(ax_sig,)` so the TE double-headed arrow is drawn only on the Signal row, not on the Gfe row.
 - **Gpe encode overlaps Gss rephaser**: `gpe_enc_t0` moved from `gss_rep_end` to `gss_ss_end` so the phase-encode lobe plays simultaneously with the slice-select rephaser (different gradient axes), pulling the rewind lobe earlier and further reducing minimum TE.
+
+---
+
+## Session 9 — Multi-Field-Strength Support & pytest Test Suite
+
+### Added
+- **Field strength radio button** in the sidebar under "MRI Parameters": options `0.064T`, `0.5T`, `1.0T`, `1.5T`, `3.0T`; default `3.0T`; horizontal layout.
+- **`FIELD_STRENGTH_TISSUES` dictionary** containing literature-based T1 and T2 values for WM, GM, CSF, and Fat at all five field strengths:
+  - *0.064 T*: O'Reilly & Webb, Magn. Reson. Med. 87(1), 2022 (in-vivo ULF measurements).
+  - *0.5 T – 3.0 T*: Bottomley et al., Med. Phys. 11(4), 1984 (empirical power-law scaling), cross-referenced with Stanisz et al., Magn. Reson. Med. 54(3), 2005 (3 T reference values).
+  - T2* values estimated as `min(T2, T2s_3T × (3.0 / B0))`: susceptibility dephasing decreases at lower field so T2* approaches T2 as B0 → 0.
+- **`FIELD_SNR_SCALE` dictionary** mapping each field strength to its SNR factor relative to 3 T (linear with B0): `0.064T → 0.021`, `0.5T → 0.167`, `1.0T → 0.333`, `1.5T → 0.500`, `3.0T → 1.000`.
+- **Dynamic TISSUES update**: T1, T2, and T2* entries in the live `TISSUES` dict are overwritten before signal calculations using the selected field strength; PD, colour, and ADC are field-strength-independent and unchanged.
+- **Field-strength SNR scaling**: effective noise reference `_noise_ref_scaled = NOISE_REF / _field_snr_scale` replaces bare `NOISE_REF` in the Step 2 noise-floor formula so that SNR decreases at lower field strengths.
+- **Dynamic page title**: heading now reads `MRI Simulator — Brain (X.XT)` and updates with the selected field strength.
+- **`test_simulator.py`** — pytest test suite for core physics calculations (43 tests, all passing):
+  - *Scan time*: formula correctness and physically realistic range (30–900 s) for FSE, GRE, FLAIR, bSSFP, MPRAGE, and DWI; NEX and phase-matrix scaling verified.
+  - *SNR relationships*: SNR ∝ √NEX and SNR ∝ 1/√BW confirmed with exact-value assertions.
+  - *Voxel volume*: SNR ∝ voxel area (halving matrix → 4× SNR), monotonic decrease with matrix size, thicker slice → higher SNR.
+  - *Signal equations*: all eight sequence signal functions verified to return values in [0, 1] at typical 3 T clinical parameters for all four tissue types; fat-saturation 5 % attenuation confirmed; non-negativity checked across all tissues × all sequences.
+  - *MPRAGE timing constraint*: valid and violating cases, strict boundary, linear readout-train scaling with Npartitions.
+  - Uses `ast` to extract physics functions directly from `app.py` source without importing the Streamlit runtime.
