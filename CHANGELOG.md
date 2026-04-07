@@ -137,6 +137,45 @@ All notable changes to `app.py` are documented here.
 
 ---
 
+## Session 13 — K-Space Visualiser
+
+### Added
+- **K-space visualiser** below the phantom images — two panels side by side:
+  - *Left*: log-magnitude 2D FFT of the current axial phantom slice (`np.log1p(|kspace|)`), displayed with the `inferno` colormap.
+  - *Right*: IFFT reconstruction from the partially filled k-space, normalised to [0, 1] and displayed with the `gray` colormap.
+- **`_ks_centric_rows(N, n_lines)`** helper: returns the first `n_lines` row indices in FSE centric order (ky = 0 first, then ±1, ±2, …).
+- **`_render_kspace_panels(ksp_partial, col_left, col_right)`** helper: renders both k-space and reconstruction panels into Streamlit columns.
+- **K-space fill radio button** (`"10%"`, `"25%"`, `"50%"`, `"75%"`, `"100%"`; default `"100%"`; horizontal): instantly displays partially filled k-space for the selected percentage without animation.
+  - *Linear sequences* (GRE, FSE for non-centric, bSSFP, FLAIR, STIR, MPRAGE, EPI, DWI): symmetric centre-out fill — lines centred on ky = 0 (`_r_start` … `_r_end`).
+  - *FSE*: centric ordering via `_ks_centric_rows` — ky = 0 filled first, then outward alternating.
+- Caption below panels shows: `"N of 128 ky lines filled (X%) · Left: k-space magnitude · Right: reconstructed image"`.
+- **`_kspace_source_img`** captured from the axial phantom slice (before noise) so k-space reflects the true contrast-weighted image.
+
+---
+
+## Session 12 — bSSFP Gpe Lobe Duration Fix
+
+### Fixed
+- **bSSFP Gpe lobe flat-top duration**: encode and rewind Gpe lobes previously used `BSSFP_GPE_ENC_FLAT = 0.22`, making them ~3× longer than the simultaneously-playing Gss and Gfe lobes. Fixed by replacing `BSSFP_GPE_ENC_FLAT` with `BSSFP_GSS_HALFPRE_FLAT = 0.075` for both encode and rewind lobes, so rise time, flat-top, and fall time match the gradient lobes they play alongside. The unused constant `BSSFP_GPE_ENC_FLAT` was removed.
+
+---
+
+## Session 11 — W/L Calculation Fix for Field Strength
+
+### Fixed
+- **Optimal W/L using stale 3 T tissue values**: the W/L computation block runs inside `with st.sidebar:` before the `TISSUES` dict is updated to the selected field strength, so it always used 3 T values. At low field (e.g. 0.064 T, WM T1 = 275 ms vs. 832 ms at 3 T) the signal contrast differs substantially and the auto-computed W/L was incorrect. Fix: directly reference `FIELD_STRENGTH_TISSUES[field_strength][tissue]` for T1/T2/T2s within the W/L computation block, bypassing the mutable `TISSUES` dict entirely. `field_strength` added to the `_params_sig` cache key so W/L recomputes when field strength changes.
+
+---
+
+## Session 10 — Dynamic TR Slider Max & T1 Recovery Curve Range
+
+### Added
+- **`TR_MAX_BY_FIELD` dictionary** mapping each field strength to its maximum TR: `0.064T → 1000 ms`, `0.5T → 2000 ms`, `1.0T → 3000 ms`, `1.5T → 4000 ms`, `3.0T → 6000 ms`.
+- **Dynamic TR slider maximum**: all per-sequence TR sliders now use `_tr_max = TR_MAX_BY_FIELD[field_strength]` as their ceiling. Each sequence floor is preserved (`max(sequence_min + step, _tr_max)` guards against `min > max` at low field).
+- **Dynamic T1 recovery curve x-axis**: `tr_range = np.linspace(100, _tr_max, 500)` and `ax_t1.set_xlim(0, _tr_max)` so the recovery curve always spans the physiologically relevant TR range for the selected field strength.
+
+---
+
 ## Session 9 — Multi-Field-Strength Support & pytest Test Suite
 
 ### Added

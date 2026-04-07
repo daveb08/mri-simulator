@@ -1575,6 +1575,10 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
     pva_sigma = (slice_mm - 1) * 0.25
     if pva_sigma > 0:
         img = gaussian_filter(img, sigma=pva_sigma)
+    # Capture the clean axial image for k-space visualisation (no noise, full
+    # processing applied).  Must be saved before noise is added below.
+    if plane_name == "Axial":
+        _kspace_source_img = img.copy()
     if noise_std > 0:
         img = np.clip(img + np.random.normal(0, noise_std, img.shape), 0, 1)
     with col:
@@ -1959,3 +1963,147 @@ if st.session_state.explanation:
     {st.session_state.explanation.replace(chr(10), "<br>")}
     </div>
     """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# K-space visualiser
+# ---------------------------------------------------------------------------
+# Displays (left) the 2-D FFT magnitude of the current axial phantom slice
+# with log scaling and (right) the image reconstructed from only the filled
+# portion of k-space.
+#
+# Two independent fill selectors:
+#   • ky fill (rows, axis 0): symmetric centre-out for all sequences except
+#     FSE, which uses centric ordering (ky = 0 first, then ±1, ±2, …).
+#   • kx fill (columns, axis 1): always symmetric centre-out.
+# Only the intersection of the selected ky rows and kx columns is filled.
+# ---------------------------------------------------------------------------
+
+st.markdown("---")
+st.markdown("### K-space Visualiser")
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _ks_centric_rows(N: int, n_lines: int) -> list:
+    """First n_lines row indices in FSE centric order (ky=0 first, outward)."""
+    centre = N // 2
+    order  = [centre]
+    for d in range(1, N):
+        if len(order) >= n_lines:
+            break
+        if centre + d < N:
+            order.append(centre + d)
+        if len(order) >= n_lines:
+            break
+        if centre - d >= 0:
+            order.append(centre - d)
+    return order[:n_lines]
+
+def _render_kspace_panels(ksp_partial: np.ndarray, col_left, col_right) -> None:
+    """Draw log-magnitude k-space (left) and IFFT reconstruction (right)."""
+    # K-space magnitude
+    ksp_mag = np.log1p(np.abs(ksp_partial))
+    fig_k, ax_k = plt.subplots(figsize=(2.8, 2.8), facecolor="#1e1e1e")
+    ax_k.imshow(ksp_mag, cmap="inferno", interpolation="nearest", origin="upper")
+    ax_k.set_title("K-space (log |F|)", color="white", fontsize=8, pad=3)
+    ax_k.axis("off")
+    fig_k.tight_layout(pad=0.3)
+    with col_left:
+        st.pyplot(fig_k, use_container_width=True)
+    plt.close(fig_k)
+
+    # Reconstructed image via IFFT
+    recon = np.abs(np.fft.ifft2(np.fft.ifftshift(ksp_partial)))
+    _rmax = recon.max()
+    if _rmax > 0:
+        recon = recon / _rmax
+    fig_r, ax_r = plt.subplots(figsize=(2.8, 2.8), facecolor="#1e1e1e")
+    ax_r.imshow(np.flipud(recon), cmap="gray", vmin=0, vmax=1,
+                interpolation="nearest")
+    ax_r.set_title("Reconstructed image", color="white", fontsize=8, pad=3)
+    ax_r.axis("off")
+    fig_r.tight_layout(pad=0.3)
+    with col_right:
+        st.pyplot(fig_r, use_container_width=True)
+    plt.close(fig_r)
+
+
+# ── Precompute full k-space from the clean axial image ───────────────────────
+# _kspace_source_img is captured inside the phantom rendering loop (before
+# noise), so it reflects current contrast, FOV, matrix, and slice parameters.
+_ks_N = 128   # display matrix (power of 2, keeps rendering fast)
+from scipy.ndimage import zoom as _zoom
+_ks_scale = _ks_N / _kspace_source_img.shape[0]
+if abs(_ks_scale - 1.0) > 0.01:
+    _ks_img = _zoom(_kspace_source_img, _ks_scale, order=1)
+else:
+    _ks_img = _kspace_source_img.copy()
+_ks_img      = np.clip(_ks_img, 0, None)
+_kspace_full = np.fft.fftshift(np.fft.fft2(_ks_img))
+
+# ── Fill-percentage selectors (ky and kx independent) ────────────────────────
+_ks_ky_col, _ks_kx_col, _ks_cap_col = st.columns([2, 2, 3])
+with _ks_ky_col:
+    _ky_order_name = (
+        "ky fill — centric (FSE)" if seq == "FSE"
+        else "ky fill (rows)"
+    )
+    _ky_pct_label = st.radio(
+        _ky_order_name,
+        ["10%", "25%", "50%", "75%", "100%"],
+        index=4,
+        horizontal=False,
+        key="kspace_ky_pct",
+    )
+with _ks_kx_col:
+    _kx_pct_label = st.radio(
+        "kx fill (columns)",
+        ["10%", "25%", "50%", "75%", "100%"],
+        index=4,
+        horizontal=False,
+        key="kspace_kx_pct",
+    )
+with _ks_cap_col:
+    st.caption(
+        "**ky** fills rows (phase-encode direction).  \n"
+        "**kx** fills columns (frequency-encode direction).  \n"
+        "Only the intersection of selected rows × columns is filled."
+    )
+
+# ── Build partial k-space for the selected percentages ───────────────────────
+_ky_frac = int(_ky_pct_label.rstrip("%")) / 100
+_kx_frac = int(_kx_pct_label.rstrip("%")) / 100
+_n_ky    = max(1, round(_ks_N * _ky_frac))
+_n_kx    = max(1, round(_ks_N * _kx_frac))
+
+# ky rows to fill
+if seq == "FSE":
+    _ky_rows = _ks_centric_rows(_ks_N, _n_ky)
+else:
+    _ky_ctr        = _ks_N // 2
+    _ky_half_below = _n_ky // 2
+    _ky_half_above = _n_ky - _ky_half_below
+    _ky_r_start    = max(0, _ky_ctr - _ky_half_below)
+    _ky_r_end      = min(_ks_N, _ky_ctr + _ky_half_above)
+    _ky_rows       = list(range(_ky_r_start, _ky_r_end))
+
+# kx columns to fill (always symmetric centre-out)
+_kx_ctr        = _ks_N // 2
+_kx_half_below = _n_kx // 2
+_kx_half_above = _n_kx - _kx_half_below
+_kx_c_start    = max(0, _kx_ctr - _kx_half_below)
+_kx_c_end      = min(_ks_N, _kx_ctr + _kx_half_above)
+_kx_cols       = list(range(_kx_c_start, _kx_c_end))
+
+# Fill intersection of selected rows and columns
+_kspace_partial = np.zeros_like(_kspace_full)
+_kspace_partial[np.ix_(_ky_rows, _kx_cols)] = _kspace_full[np.ix_(_ky_rows, _kx_cols)]
+
+# ── Display ───────────────────────────────────────────────────────────────────
+_col_ksp, _col_recon = st.columns(2)
+_render_kspace_panels(_kspace_partial, _col_ksp, _col_recon)
+st.caption(
+    f"{len(_ky_rows)} of {_ks_N} ky rows filled ({_ky_pct_label})  ·  "
+    f"{len(_kx_cols)} of {_ks_N} kx columns filled ({_kx_pct_label})  ·  "
+    f"Left: k-space magnitude (log scale)  ·  "
+    f"Right: image reconstructed from filled region only"
+)
