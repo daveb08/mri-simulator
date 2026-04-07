@@ -1998,9 +1998,21 @@ def _ks_centric_rows(N: int, n_lines: int) -> list:
             order.append(centre - d)
     return order[:n_lines]
 
-def _render_kspace_panels(ksp_partial: np.ndarray, col_left, col_right) -> None:
-    """Draw log-magnitude k-space (left) and IFFT reconstruction (right)."""
-    # K-space magnitude
+def _render_kspace_panels(ksp_partial: np.ndarray, col_left, col_right,
+                           ksp_recon: np.ndarray = None,
+                           vmin: float = 0.0, vmax: float = 1.0) -> None:
+    """Draw log-magnitude k-space (left) and IFFT reconstruction (right).
+
+    ksp_partial  — used for the magnitude display (clean, no noise).
+    ksp_recon    — used for the IFFT reconstruction; defaults to ksp_partial.
+                   Pass a noise-added copy to show realistic image SNR.
+    vmin / vmax  — window/level bounds in base-signal space, matching the main
+                   phantom display so contrast is identical.
+    """
+    if ksp_recon is None:
+        ksp_recon = ksp_partial
+
+    # K-space magnitude (clean, no noise)
     ksp_mag = np.log1p(np.abs(ksp_partial))
     fig_k, ax_k = plt.subplots(figsize=(2.8, 2.8), facecolor="#1e1e1e")
     ax_k.imshow(ksp_mag, cmap="inferno", interpolation="nearest", origin="upper")
@@ -2011,13 +2023,12 @@ def _render_kspace_panels(ksp_partial: np.ndarray, col_left, col_right) -> None:
         st.pyplot(fig_k, use_container_width=True)
     plt.close(fig_k)
 
-    # Reconstructed image via IFFT
-    recon = np.abs(np.fft.ifft2(np.fft.ifftshift(ksp_partial)))
-    _rmax = recon.max()
-    if _rmax > 0:
-        recon = recon / _rmax
+    # Reconstructed image via IFFT (from noisy k-space).
+    # Values are in base-signal space (same scale as _ks_img), so vmin/vmax
+    # from the main W/L sliders apply directly — no normalisation needed.
+    recon = np.abs(np.fft.ifft2(np.fft.ifftshift(ksp_recon)))
     fig_r, ax_r = plt.subplots(figsize=(2.8, 2.8), facecolor="#1e1e1e")
-    ax_r.imshow(np.flipud(recon), cmap="gray", vmin=0, vmax=1,
+    ax_r.imshow(np.flipud(recon), cmap="gray", vmin=vmin, vmax=vmax,
                 interpolation="nearest")
     ax_r.set_title("Reconstruction of Current Axial Image", color="white", fontsize=8, pad=3)
     ax_r.axis("off")
@@ -2098,9 +2109,26 @@ _kx_cols       = list(range(_kx_c_start, _kx_c_end))
 _kspace_partial = np.zeros_like(_kspace_full)
 _kspace_partial[np.ix_(_ky_rows, _kx_cols)] = _kspace_full[np.ix_(_ky_rows, _kx_cols)]
 
+# ── Add k-space noise to match the main display noise floor ──────────────────
+# Physics: for an N×N IFFT, image-space noise std = σ_k / N.
+# noise_std (= noise_floor / _vol_scale) is already in base-signal (0–1) space,
+# matching the pixel values of _ks_img.  So σ_k = noise_std × _ks_N gives
+# image-space noise equal to noise_std at 100 % k-space fill.
+# Noise is added only to filled positions; unfilled (zero) positions are left
+# at zero, so partial-fill images show both blurring and realistic noise.
+_ks_sigma = noise_std * _ks_N
+_ks_noise_real = np.random.normal(0.0, _ks_sigma, _kspace_partial.shape)
+_ks_noise_imag = np.random.normal(0.0, _ks_sigma, _kspace_partial.shape)
+_ks_filled_mask = _kspace_partial != 0
+_kspace_noisy = _kspace_partial.copy()
+_kspace_noisy[_ks_filled_mask] += (
+    _ks_noise_real[_ks_filled_mask] + 1j * _ks_noise_imag[_ks_filled_mask]
+)
+
 # ── Display ───────────────────────────────────────────────────────────────────
 _col_ksp, _col_recon = st.columns(2)
-_render_kspace_panels(_kspace_partial, _col_ksp, _col_recon)
+_render_kspace_panels(_kspace_partial, _col_ksp, _col_recon,
+                      ksp_recon=_kspace_noisy, vmin=vmin, vmax=vmax)
 st.caption(
     f"{len(_ky_rows)} of {_ks_N} ky rows filled ({_ky_pct_label})  ·  "
     f"{len(_kx_cols)} of {_ks_N} kx columns filled ({_kx_pct_label})  ·  "
