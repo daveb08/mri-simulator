@@ -124,6 +124,17 @@ FIELD_SNR_SCALE = {
     "3.0T":   1.000,
 }
 
+# Maximum clinically useful TR per field strength.
+# T1 values shorten at lower B0, so very long TRs add no contrast benefit.
+# These values set both the TR slider ceiling and the T1 recovery curve x-axis limit.
+TR_MAX_BY_FIELD = {
+    "0.064T": 1000,
+    "0.5T":   2000,
+    "1.0T":   3000,
+    "1.5T":   4000,
+    "3.0T":   6000,
+}
+
 SNR_SCALE = 200.0
 
 # ---------------------------------------------------------------------------
@@ -1076,6 +1087,7 @@ with st.sidebar:
         horizontal=True,
         key="field_strength",
     )
+    _tr_max = TR_MAX_BY_FIELD[field_strength]
 
     st.markdown("**Sequence**")
     seq = st.radio("", ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI (single-shot)"],
@@ -1096,15 +1108,32 @@ with st.sidebar:
 
     st.markdown("**Parameters**")
 
-    # TR — sequence-specific range
-    if   seq == "FLAIR":   TR = st.slider("TR (ms)",  3000, 15000,  9000, 100)
-    elif seq == "STIR":    TR = st.slider("TR (ms)",  1000,  6000,  3000,  50)
-    elif seq == "bSSFP":   TR = st.slider("TR (ms)",     3,    20,     5,   1)
-    elif seq == "DIR":     TR = st.slider("TR (ms)",  5000, 15000,  8000, 100)
-    elif seq == "DWI":     TR = st.slider("TR (ms)",  3000,  8000,  5000, 100)
-    elif seq == "MPRAGE":  TR = st.slider("TR (ms)",  2000,  4000,  2300, 100)
-    elif seq == "EPI":     TR = st.slider("TR (ms)",   500,  3000,  2000, 100)
-    else:                  TR = st.slider("TR (ms)",   500, 10000,  4000,  50)
+    # TR — sequence-specific range, capped at the field-strength maximum.
+    # Each slider uses max(sequence_min + step, _tr_max) as its ceiling so
+    # that the slider always has a valid range even at very low field strengths
+    # where _tr_max may be shorter than the sequence's physiological minimum TR.
+    if   seq == "FLAIR":
+        _fm = max(3100, _tr_max)   # FLAIR min TR = 3000 ms
+        TR = st.slider("TR (ms)",  3000, _fm, min(9000, _fm), 100)
+    elif seq == "STIR":
+        _fm = max(1050, _tr_max)   # STIR min TR = 1000 ms
+        TR = st.slider("TR (ms)",  1000, _fm, min(3000, _fm),  50)
+    elif seq == "bSSFP":
+        TR = st.slider("TR (ms)",     3,   20,     5,   1)   # hardware-constrained; field-strength cap irrelevant
+    elif seq == "DIR":
+        _fm = max(5100, _tr_max)   # DIR min TR = 5000 ms
+        TR = st.slider("TR (ms)",  5000, _fm, min(8000, _fm), 100)
+    elif seq == "DWI":
+        _fm = max(3100, _tr_max)   # DWI min TR = 3000 ms
+        TR = st.slider("TR (ms)",  3000, _fm, min(5000, _fm), 100)
+    elif seq == "MPRAGE":
+        _fm = max(2100, _tr_max)   # MPRAGE min TR = 2000 ms
+        TR = st.slider("TR (ms)",  2000, _fm, min(2300, _fm), 100)
+    elif seq == "EPI":
+        _fm = max(600, min(3000, _tr_max))   # EPI: cap at min(3000, field max)
+        TR = st.slider("TR (ms)",   500, _fm, min(2000, _fm), 100)
+    else:                                    # FSE, GRE — directly tied to T1 recovery curve
+        TR = st.slider("TR (ms)",   500, _tr_max, min(4000, _tr_max),  50)
 
     # Initialise variables that may not be set by every sequence branch
     b   = 0
@@ -1268,11 +1297,22 @@ with st.sidebar:
     # Compute optimal W/L before sliders are instantiated (session state must
     # be updated before keyed widgets render). Track a signature of all
     # signal-affecting parameters; recompute only when something changes.
-    _params_sig = (seq, TR, TE, FA, TI, TI1, TI2, b, fat_sat, FOV_read, FOV_phase, freq_matrix, phase_matrix, slice_mm)
+    #
+    # W/L is derived from pure physics signal equations — no voxel-volume,
+    # SNR, noise, or field-strength SNR-scaling factors are applied.
+    # Tissue T1/T2/T2s are taken from FIELD_STRENGTH_TISSUES[field_strength]
+    # so the computed W/L always matches the tissue parameters used to render
+    # the phantom image (which are also set from FIELD_STRENGTH_TISSUES).
+    # PD and ADC are field-strength-independent and come from the base TISSUES dict.
+    # field_strength is included in _params_sig so W/L recomputes whenever B0 changes.
+    _params_sig = (seq, TR, TE, FA, TI, TI1, TI2, b, fat_sat,
+                   FOV_read, FOV_phase, freq_matrix, phase_matrix, slice_mm,
+                   field_strength)
     if _params_sig != st.session_state.params_sig:
         _sigs = []
+        _fs_t = FIELD_STRENGTH_TISSUES[field_strength]   # T1/T2/T2s for current B0
         for _t in ["WM", "GM", "CSF"]:
-            _p = TISSUES[_t]
+            _p = {**TISSUES[_t], **_fs_t[_t]}   # PD/ADC from base; T1/T2/T2s from current B0
             if seq == "FSE":
                 _s = fse_signal(TR, TE, _p["T1"], _p["T2"], _p["PD"], fat_sat=fat_sat, is_fat=False)
             elif seq == "GRE":
@@ -1602,7 +1642,7 @@ with col_bars:
 
 # --- Relaxation curves ---
 brain_tissues = ["WM", "GM", "CSF"]
-tr_range = np.linspace(100, 10000, 500)
+tr_range = np.linspace(100, _tr_max, 500)
 te_range = np.linspace(2,   300,   500)
 
 with col_curves:
@@ -1690,7 +1730,7 @@ with col_curves:
                 s = p["PD"] * (1 - np.exp(-tr_range/p["T1"])) * np.exp(-TE/p["T2"])
             ax_t1.plot(tr_range, s, color=p["color"], label=t, linewidth=1.5)
         ax_t1.axvline(TR, color="white", linestyle="--", linewidth=1, alpha=0.6, label="Current TR")
-        ax_t1.set_xlim(0, 6000)
+        ax_t1.set_xlim(0, _tr_max)
         ax_t1.set_title("T1 Recovery", fontsize=9)
         ax_t1.set_xlabel("TR (ms)", fontsize=8)
 
