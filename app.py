@@ -2019,7 +2019,7 @@ def _render_kspace_panels(ksp_partial: np.ndarray, col_left, col_right) -> None:
     fig_r, ax_r = plt.subplots(figsize=(2.8, 2.8), facecolor="#1e1e1e")
     ax_r.imshow(np.flipud(recon), cmap="gray", vmin=0, vmax=1,
                 interpolation="nearest")
-    ax_r.set_title("Reconstructed image", color="white", fontsize=8, pad=3)
+    ax_r.set_title("Reconstruction of Current Axial Image", color="white", fontsize=8, pad=3)
     ax_r.axis("off")
     fig_r.tight_layout(pad=0.3)
     with col_right:

@@ -137,6 +137,18 @@ All notable changes to `app.py` are documented here.
 
 ---
 
+## Session 14 — K-Space Visualiser: Independent kx / ky Fill Selectors
+
+### Changed
+- **Single k-space fill selector replaced with two independent selectors** — `ky fill (rows)` and `kx fill (columns)`, each offering `10%`, `25%`, `50%`, `75%`, `100%` (default `100%`); displayed as vertical radio buttons in side-by-side columns.
+  - *ky fill*: fills the selected fraction of rows centred on ky = 0; FSE uses centric ordering (ky = 0 first, then ±1, ±2, …); label changes to `"ky fill — centric (FSE)"` when FSE is active.
+  - *kx fill*: always fills the selected fraction of columns centred on kx = 0 (symmetric centre-out).
+  - Partial k-space is the **intersection** of the selected rows × columns via `np.ix_(_ky_rows, _kx_cols)`, so reducing kx produces a vertical band and reducing ky produces a horizontal band, demonstrating the independent effect of each encoding direction on resolution and ringing artefacts.
+- **Caption** updated to report both dimensions: `N of 128 ky rows filled (X%) · M of 128 kx columns filled (Y%)`.
+- **Explanatory caption** added alongside the selectors: describes ky as the phase-encode direction and kx as the frequency-encode direction.
+
+---
+
 ## Session 13 — K-Space Visualiser
 
 ### Added
