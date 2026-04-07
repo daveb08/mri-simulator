@@ -423,7 +423,6 @@ BSSFP_GSS_HALFPRE_FLAT  = 0.075 # flat-top of pre/rephaser — area = SS_area/2 
 BSSFP_GFE_RO_FLAT       = 0.1125 # flat-top of Gfe readout lobe — derived so 2×neg_area = readout_area → net Gfe = 0
 BSSFP_GFE_PERIPH_FLAT   = 0.22  # (retained for reference; superseded by the neg-lobe/readout balance above)
 # Gpe balanced bipolar geometry (encode → rewind, net moment = 0)
-BSSFP_GPE_ENC_FLAT      = 0.22  # flat-top of Gpe encode and rewind lobes — equal areas → net Gpe = 0
 # 'Repeating unit' dashed rectangle styling
 BSSFP_REPEAT_COLOR      = "#6688AA"  # border colour of 'Repeating unit' rectangle
 BSSFP_RECT_LINEWIDTH    = 0.8   # linewidth of 'Repeating unit' rectangle
@@ -919,9 +918,10 @@ def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=2
             trap(ax_fe, t_ro_c0,   GRAD_RISE_XS, BSSFP_GFE_RO_FLAT,      GRAD_RISE_XS,  GRAD_FE_READ_AMP, c_fe)
 
             # ── Gpe: encode(−) → rewind(+) bipolar pair (net moment = 0) ─────
-            #   coincident with Gss pre/rephaser; first lobe negative, second positive
-            trap(ax_pe, t_ss_pre0, GRAD_RISE_XS, BSSFP_GPE_ENC_FLAT, GRAD_RISE_XS, -BSSFP_PE_AMP * sign, c_pe)
-            trap(ax_pe, t_ss_end,  GRAD_RISE_XS, BSSFP_GPE_ENC_FLAT, GRAD_RISE_XS,  BSSFP_PE_AMP * sign, c_pe)
+            #   Timing (rise, flat, fall) matches Gss pre/rephaser and the
+            #   simultaneous Gfe lobes exactly; only amplitude differs.
+            trap(ax_pe, t_ss_pre0, GRAD_RISE_XS, BSSFP_GSS_HALFPRE_FLAT, GRAD_RISE_XS, -BSSFP_PE_AMP * sign, c_pe)
+            trap(ax_pe, t_ss_end,  GRAD_RISE_XS, BSSFP_GSS_HALFPRE_FLAT, GRAD_RISE_XS,  BSSFP_PE_AMP * sign, c_pe)
 
             # Signal: gradient echo centred at TE = TR/2
             grad_echo(ax_sig, te_c, amp * BSSFP_SIG_SCALE, SIGNAL_HW_BSSFP)
