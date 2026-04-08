@@ -1063,6 +1063,11 @@ if "wl_opt_window" not in st.session_state:
     st.session_state.wl_opt_window = 1.0
 if "wl_opt_level"  not in st.session_state:
     st.session_state.wl_opt_level  = 0.5
+# K-space reconstructed image independent W/L controls
+if "ks_reco_window" not in st.session_state:
+    st.session_state.ks_reco_window = 1.0
+if "ks_reco_level"  not in st.session_state:
+    st.session_state.ks_reco_level  = 0.5
 if "ga4_prev_seq"   not in st.session_state:
     st.session_state.ga4_prev_seq   = None
 if "ga4_prev_slice" not in st.session_state:
@@ -1635,7 +1640,7 @@ with col_bars:
     fig_snr, ax_snr = plt.subplots(figsize=(2.5, 1.5), facecolor="#1e1e1e")
     snr_vals = [snrs[t] for t in names]
     bars2 = ax_snr.bar(names, snr_vals, color=colors, width=0.5)
-    ax_snr.set_title("SNR", fontsize=9)
+    ax_snr.set_title("SNR (= Signal / Noise floor)", fontsize=9)
     for bar, val in zip(bars2, snr_vals):
         ax_snr.text(bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.2,
@@ -2051,8 +2056,22 @@ else:
 _ks_img      = np.clip(_ks_img, 0, None)
 _kspace_full = np.fft.fftshift(np.fft.fft2(_ks_img))
 
-# ── Fill-percentage selectors (ky and kx independent) ────────────────────────
-_ks_ky_col, _ks_kx_col, _ks_cap_col = st.columns([2, 2, 3])
+# ── Controls row: Fill Region | ky fill | kx fill | Auto W/L ─────────────────
+_ks_reg_col, _ks_ky_col, _ks_kx_col, _ks_wl_col = st.columns([1.5, 2, 2, 2.5])
+with _ks_reg_col:
+    _ks_region = st.radio(
+        "Fill region",
+        ["Center", "Edges"],
+        index=0,
+        horizontal=False,
+        key="kspace_region",
+    )
+    if _ks_region == "Edges":
+        st.caption(
+            "If the reconstructed image is not apparent, please manually "
+            "adjust the window and/or level settings to better visualize "
+            "the image under the current k-space filling selections."
+        )
 with _ks_ky_col:
     _ky_order_name = (
         "ky fill — centric (FSE)" if seq == "FSE"
@@ -2073,11 +2092,11 @@ with _ks_kx_col:
         horizontal=False,
         key="kspace_kx_pct",
     )
-with _ks_cap_col:
-    st.caption(
-        "**ky** fills rows (phase-encode direction).  \n"
-        "**kx** fills columns (frequency-encode direction).  \n"
-        "Only the intersection of selected rows × columns is filled."
+
+with _ks_wl_col:
+    _ks_auto_wl = st.checkbox(
+        "Auto W/L", key="ks_auto_wl",
+        help="Automatically compute optimal window/level from the reconstructed image on every run.",
     )
 
 # ── Build partial k-space for the selected percentages ───────────────────────
@@ -2087,27 +2106,57 @@ _n_ky    = max(1, round(_ks_N * _ky_frac))
 _n_kx    = max(1, round(_ks_N * _kx_frac))
 
 # ky rows to fill
-if seq == "FSE":
-    _ky_rows = _ks_centric_rows(_ks_N, _n_ky)
-else:
-    _ky_ctr        = _ks_N // 2
-    _ky_half_below = _n_ky // 2
-    _ky_half_above = _n_ky - _ky_half_below
-    _ky_r_start    = max(0, _ky_ctr - _ky_half_below)
-    _ky_r_end      = min(_ks_N, _ky_ctr + _ky_half_above)
-    _ky_rows       = list(range(_ky_r_start, _ky_r_end))
+if _ks_region == "Center":
+    if seq == "FSE":
+        _ky_rows = _ks_centric_rows(_ks_N, _n_ky)
+    else:
+        _ky_ctr        = _ks_N // 2
+        _ky_half_below = _n_ky // 2
+        _ky_half_above = _n_ky - _ky_half_below
+        _ky_r_start    = max(0, _ky_ctr - _ky_half_below)
+        _ky_r_end      = min(_ks_N, _ky_ctr + _ky_half_above)
+        _ky_rows       = list(range(_ky_r_start, _ky_r_end))
+else:  # Edges — outermost _n_ky rows, split evenly top/bottom
+    if seq == "FSE":
+        # Complement of the innermost (_ks_N - _n_ky) centric rows
+        _ky_inner = set(_ks_centric_rows(_ks_N, _ks_N - _n_ky))
+        _ky_rows  = sorted(set(range(_ks_N)) - _ky_inner)
+    else:
+        _ky_top = _n_ky // 2
+        _ky_bot = _n_ky - _ky_top
+        _ky_rows = list(range(0, _ky_top)) + list(range(_ks_N - _ky_bot, _ks_N))
 
-# kx columns to fill (always symmetric centre-out)
-_kx_ctr        = _ks_N // 2
-_kx_half_below = _n_kx // 2
-_kx_half_above = _n_kx - _kx_half_below
-_kx_c_start    = max(0, _kx_ctr - _kx_half_below)
-_kx_c_end      = min(_ks_N, _kx_ctr + _kx_half_above)
-_kx_cols       = list(range(_kx_c_start, _kx_c_end))
+# kx columns to fill
+if _ks_region == "Center":
+    _kx_ctr        = _ks_N // 2
+    _kx_half_below = _n_kx // 2
+    _kx_half_above = _n_kx - _kx_half_below
+    _kx_c_start    = max(0, _kx_ctr - _kx_half_below)
+    _kx_c_end      = min(_ks_N, _kx_ctr + _kx_half_above)
+    _kx_cols       = list(range(_kx_c_start, _kx_c_end))
+else:  # Edges — outermost _n_kx columns, split evenly left/right
+    _kx_left  = _n_kx // 2
+    _kx_right = _n_kx - _kx_left
+    _kx_cols  = list(range(0, _kx_left)) + list(range(_ks_N - _kx_right, _ks_N))
 
-# Fill intersection of selected rows and columns
+# Fill k-space:
+#   Center — AND: intersection of selected rows × columns (central rectangle).
+#   Edges, both axes partial — OR: any point where ky OR kx is in the outer
+#     set, producing a continuous outer border rather than isolated corners.
+#   Edges, one axis at 100% — AND via np.ix_: the 100 % axis selects all
+#     rows/cols, so its partner axis constraint is always respected.  The OR
+#     approach would fill the entire array via the "all rows × all cols" term,
+#     ignoring the partial constraint on the other axis entirely.
 _kspace_partial = np.zeros_like(_kspace_full)
-_kspace_partial[np.ix_(_ky_rows, _kx_cols)] = _kspace_full[np.ix_(_ky_rows, _kx_cols)]
+if _ks_region == "Center":
+    _kspace_partial[np.ix_(_ky_rows, _kx_cols)] = _kspace_full[np.ix_(_ky_rows, _kx_cols)]
+elif _n_ky == _ks_N or _n_kx == _ks_N:
+    # At least one axis is 100 %: use AND so the partial axis still constrains.
+    _kspace_partial[np.ix_(_ky_rows, _kx_cols)] = _kspace_full[np.ix_(_ky_rows, _kx_cols)]
+else:
+    # Both axes partial: OR for continuous border.
+    _kspace_partial[_ky_rows, :] = _kspace_full[_ky_rows, :]
+    _kspace_partial[:, _kx_cols] = _kspace_full[:, _kx_cols]
 
 # ── Add k-space noise to match the main display noise floor ──────────────────
 # Physics: for an N×N IFFT, image-space noise std = σ_k / N.
@@ -2125,10 +2174,47 @@ _kspace_noisy[_ks_filled_mask] += (
     _ks_noise_real[_ks_filled_mask] + 1j * _ks_noise_imag[_ks_filled_mask]
 )
 
-# ── Display ───────────────────────────────────────────────────────────────────
+# ── Reco W/L: auto or manual ──────────────────────────────────────────────────
+# Reconstruct now so Auto W/L can compute stats before the sliders render.
+_ks_recon_for_wl = np.abs(np.fft.ifft2(np.fft.ifftshift(_kspace_noisy)))
+if _ks_auto_wl:
+    # Compute optimal W/L directly from the current reconstruction.
+    st.session_state.ks_reco_window = float(np.clip(2.0 * float(np.std(_ks_recon_for_wl)),  0.01, 2.0))
+    st.session_state.ks_reco_level  = float(np.clip(float(np.mean(_ks_recon_for_wl)), 0.0,  1.0))
+    _ks_reco_window = st.session_state.ks_reco_window
+    _ks_reco_level  = st.session_state.ks_reco_level
+else:
+    _, _ks_slider_col = st.columns([6.5, 2.5])
+    with _ks_slider_col:
+        if st.button("Reset Reco Image W/L to Optimal", key="ks_reco_wl_reset"):
+            st.session_state.ks_reco_window = float(np.clip(2.0 * float(np.std(_ks_recon_for_wl)), 0.01, 2.0))
+            st.session_state.ks_reco_level  = float(np.clip(float(np.mean(_ks_recon_for_wl)), 0.0, 1.0))
+        _ks_reco_window = st.slider(
+            "Reco Window", 0.01, 2.0, step=0.01, key="ks_reco_window",
+        )
+        _ks_reco_level = st.slider(
+            "Reco Level", 0.0, 1.0, step=0.01, key="ks_reco_level",
+        )
+
+# ── Caption row: left column above k-space figure ────────────────────────────
+_ks_cap_l, _ks_cap_r = st.columns(2)
+with _ks_cap_l:
+    st.caption(
+        "**ky** fills rows (phase-encode direction).  \n"
+        "**kx** fills columns (frequency-encode direction).  \n"
+        "**Center**: innermost lines outward.  \n"
+        "**Edges**: outermost lines inward, excluding centre.  \n"
+        "Only the intersection of selected rows × columns is filled."
+    )
+
+# ── Images row: both columns start at the same vertical position ──────────────
+_ks_reco_vmin = _ks_reco_level - _ks_reco_window / 2
+_ks_reco_vmax = _ks_reco_level + _ks_reco_window / 2
+
 _col_ksp, _col_recon = st.columns(2)
 _render_kspace_panels(_kspace_partial, _col_ksp, _col_recon,
-                      ksp_recon=_kspace_noisy, vmin=vmin, vmax=vmax)
+                      ksp_recon=_kspace_noisy,
+                      vmin=_ks_reco_vmin, vmax=_ks_reco_vmax)
 st.caption(
     f"{len(_ky_rows)} of {_ks_N} ky rows filled ({_ky_pct_label})  ·  "
     f"{len(_kx_cols)} of {_ks_N} kx columns filled ({_kx_pct_label})  ·  "
