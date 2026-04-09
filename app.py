@@ -1118,8 +1118,7 @@ with st.sidebar:
     # that the slider always has a valid range even at very low field strengths
     # where _tr_max may be shorter than the sequence's physiological minimum TR.
     if   seq == "FLAIR":
-        _fm = max(3100, _tr_max)   # FLAIR min TR = 3000 ms
-        TR = st.slider("TR (ms)",  3000, _fm, min(9000, _fm), 100)
+        TR = st.slider("TR (ms)",  3000, 10000, 9000, 100)  # fixed range — FLAIR needs long TR at all field strengths
     elif seq == "STIR":
         _fm = max(1050, _tr_max)   # STIR min TR = 1000 ms
         TR = st.slider("TR (ms)",  1000, _fm, min(3000, _fm),  50)
