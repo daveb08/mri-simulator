@@ -12,6 +12,14 @@ import streamlit as st
 import anthropic
 from scipy.ndimage import gaussian_filter
 
+# Token gate — blocks direct access without a valid token
+_token = st.query_params.get("token", "")
+_expected = st.secrets.get("SIMULATOR_TOKEN", "")
+if not _token or _token != _expected:
+    st.error("🔒 This simulator is only accessible through MRI Mastery.")
+    st.markdown("Visit [mrimastery.com](https://mrimastery.com) to access the MRI Simulator with a premium subscription.")
+    st.stop()
+    
 # ---------------------------------------------------------------------------
 # Page config — must be first Streamlit call
 # ---------------------------------------------------------------------------
@@ -2183,7 +2191,7 @@ if _ks_auto_wl:
     _ks_reco_window = st.session_state.ks_reco_window
     _ks_reco_level  = st.session_state.ks_reco_level
 else:
-    _, _ks_slider_col = st.columns([6.5, 2.5])
+    _, _ks_slider_col = st.columns([5, 1]) # DAVE CHANGED from 6.5, 2.5
     with _ks_slider_col:
         if st.button("Reset Reco Image W/L to Optimal", key="ks_reco_wl_reset"):
             st.session_state.ks_reco_window = float(np.clip(2.0 * float(np.std(_ks_recon_for_wl)), 0.01, 2.0))
@@ -2199,12 +2207,9 @@ else:
 _ks_cap_l, _ks_cap_r = st.columns(2)
 with _ks_cap_l:
     st.caption(
-        "**ky** fills rows (phase-encode direction).  \n"
-        "**kx** fills columns (frequency-encode direction).  \n"
-        "**Center**: innermost lines outward.  \n"
-        "**Edges**: outermost lines inward, excluding centre.  \n"
-        "Only the intersection of selected rows × columns is filled."
-    )
+        "**ky** fills rows (phase-encode direction). **kx** fills columns (frequency-encode direction). "
+        "**Center**: innermost lines outward." "**Edges**: outermost lines inward, excluding centre. Only the intersection of selected rows × columns is filled."
+     )
 
 # ── Images row: both columns start at the same vertical position ──────────────
 _ks_reco_vmin = _ks_reco_level - _ks_reco_window / 2
