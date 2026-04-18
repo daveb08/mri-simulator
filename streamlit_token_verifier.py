@@ -74,11 +74,24 @@ def verify_simulator_token(token: str, secret: str) -> Optional[dict]:
     return payload
 
 
+_SESSION_KEY = "_simulator_authed_user_id"
+
+
 def require_valid_token() -> str:
     """
     Reads ?token=... from the Streamlit query params, verifies it, and
     returns the user id on success. Halts the app on failure.
+
+    Once a session has been authenticated, the result is cached in
+    st.session_state so subsequent script reruns within the same browser
+    session don't re-validate (and therefore don't get kicked out when the
+    10-minute token expires mid-use). A new browser session always requires
+    a fresh, unexpired token.
     """
+    cached = st.session_state.get(_SESSION_KEY)
+    if cached:
+        return cached
+
     secret = os.environ.get("SIMULATOR_SIGNING_SECRET") or st.secrets.get(
         "SIMULATOR_SIGNING_SECRET", ""
     )
@@ -98,4 +111,6 @@ def require_valid_token() -> str:
         )
         st.stop()
 
-    return str(payload["u"])
+    user_id = str(payload["u"])
+    st.session_state[_SESSION_KEY] = user_id
+    return user_id
