@@ -13,13 +13,19 @@ import anthropic
 from scipy.ndimage import gaussian_filter
 
 # Token gate — blocks direct access without a valid token
-_token = st.query_params.get("token", "")
-_expected = st.secrets.get("SIMULATOR_TOKEN", "")
-if not _token or _token != _expected:
-    st.error("🔒 This simulator is only accessible through MRI Mastery.")
-    st.markdown("Visit [mrimastery.com](https://mrimastery.com) to access the MRI Simulator with a premium subscription.")
-    st.stop()
-    
+# Dave commented lines of code starting at "_expected" to "st.stop()" per replit session on 18April26
+# _token = st.query_params.get("token", "")
+#_expected = st.secrets.get("SIMULATOR_TOKEN", "")
+#if not _token or _token != _expected:
+#    st.error("🔒 This simulator is only accessible through MRI Mastery.")
+#    st.markdown("Visit [mrimastery.com](https://mrimastery.com) to access the MRI Simulator with a premium subscription.")
+#    st.stop()
+###### Dave: added these two lines of code per replit session dated 18Apr26
+from streamlit_token_verifier import require_valid_token
+# Token gate — verifies short-lived signed tokens from MRI Mastery
+user_id = require_valid_token()
+##### End new code 18Apr26
+
 # ---------------------------------------------------------------------------
 # Page config — must be first Streamlit call
 # ---------------------------------------------------------------------------
