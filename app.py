@@ -453,11 +453,43 @@ GRE_GSS_REP_FLAT        = 0.06  # Gss rephaser flat-top: area = GRE_GSS_FLAT/2 +
 GRE_GFE_REF_BW          = 200.0 # reference readout bandwidth (Hz/px) for Gfe amplitude normalisation
 GRE_GFE_REF_FOV         = 240.0 # reference FOV_read (mm) for Gfe amplitude normalisation
 
+# ── Section 5: EPI (single-shot) constants ────────────────────────────────
+EPI_RF_TC           = 0.6    # time-centre of 90° excitation
+EPI_GSS_T0          = 0.34   # start of Gss main lobe: RF_TC − EPI_GSS_RISE − EPI_GSS_FLAT/2 = 0.34
+EPI_GSS_RISE        = 0.06   # EPI-specific Gss rise/fall (shorter than GRAD_RISE — fast EPI grads)
+EPI_GSS_FLAT        = 0.40   # EPI-specific Gss flat-top; centre = EPI_GSS_T0+rise+flat/2 = EPI_RF_TC
+EPI_GSS_REP_AMP     = -1.00  # Gss rephaser amp (same as SS amp; shorter flat → area = SS_area/2)
+EPI_GSS_REP_FLAT    = 0.17   # Gss rephaser flat: area = (EPI_GSS_FLAT+EPI_GSS_RISE)/2 = 0.23
+EPI_GSS_REP_RISE    = 0.06   # Gss rephaser rise/fall (= EPI_GSS_RISE — same slew rate)
+EPI_PE_PREP_RISE    = 0.05   # Gpe prephaser rise/fall
+EPI_PE_PREP_FLAT    = 0.17   # Gpe prephaser flat-top
+EPI_PE_PREP_AMP     = -0.80  # Gpe prephaser amplitude (negative → ky = −ky_max)
+# Gfe prephaser rise = |prep_amp|/ro_amp × ro_rise = 0.80/1.00 × 0.04 = 0.032
+# → identical slew rate to first readout lobe (both on Gfe axis)
+EPI_FE_PREP_RISE    = 0.032  # Gfe prephaser rise/fall (matched slew rate to readout)
+EPI_FE_PREP_FLAT    = 0.17   # Gfe prephaser flat-top
+EPI_FE_PREP_AMP     = -0.80  # Gfe prephaser amplitude (negative → kx = −kx_max)
+EPI_RO_RISE         = 0.04   # Gfe readout lobe rise/fall (~33% shorter; = half inter-lobe ramp)
+EPI_RO_FLAT         = 0.21   # Gfe readout lobe flat-top (~40% shorter)
+EPI_RO_AMP          = 1.00   # Gfe readout amplitude
+EPI_BLIP_RISE       = 0.02   # Gpe blip rise/fall (fits in 2×EPI_RO_RISE = 0.08 window)
+EPI_BLIP_FLAT       = 0.04   # Gpe blip flat-top
+EPI_BLIP_AMP        = 0.30   # Gpe blip amplitude (small — one ky line per readout)
+EPI_N_SHOW          = 6      # explicit readout lobes to draw before "..."
+EPI_DOTS_X          = 3.26   # x-position of "..." (old + 0.16 timing shift from GSS_T0 change)
+EPI_FINAL_RO_T0     = 3.41   # x-start of final (Nth) readout lobe
+EPI_XLIM_RIGHT      = 3.96   # right x-axis limit
+EPI_NOMINAL_ESP_MS  = 0.8    # nominal ms between EPI readout centres (typical 3T EPI)
+EPI_SIG_PEAK        = 2.00   # signal amplitude at first (echo 0) readout: DAVE changed from 1 to 2
+EPI_SIG_DECAY       = 0.35   # per-echo T2* decay exponent (steeper — fast T2* decay)
+EPI_SIG_HW_SCALE    = 0.16   # echo hw multiplier: full_width=0.207 < ESP_s=0.29 → 28% gap
 
-def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=240):
+
+def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=240,
+                        epi_eff_idx=1, epi_n_readouts=64):
     """Return a matplotlib Figure with an oscilloscope-style pulse sequence
-    diagram for FSE, GRE, FLAIR, STIR, bSSFP.  Returns None for others."""
-    if seq not in ("FSE", "GRE", "FLAIR", "STIR", "bSSFP"):
+    diagram for FSE, GRE, FLAIR, STIR, bSSFP, EPI.  Returns None for others."""
+    if seq not in ("FSE", "GRE", "FLAIR", "STIR", "bSSFP", "EPI (single-shot)"):
         return None
 
     ROW_LABELS = ["RF", "Gss", "Gpe", "Gfe", "Signal"]
@@ -971,6 +1003,137 @@ def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=2
 
         axes[-1].set_xlim(0, T_TOTAL)
 
+    # ================================================================
+    # EPI (single-shot) — physically accurate gradient-echo EPI
+    # ================================================================
+    elif seq == "EPI (single-shot)":
+        # ── Timing landmarks ─────────────────────────────────────────────────
+        # EPI uses its own Gss rise/flat (shorter than FSE/GRE global constants)
+        gss_end     = EPI_GSS_T0 + EPI_GSS_RISE + EPI_GSS_FLAT + EPI_GSS_RISE    # 0.70
+        gss_rep_end = gss_end + EPI_GSS_REP_RISE + EPI_GSS_REP_FLAT + EPI_GSS_REP_RISE  # 0.99
+        prep_end    = gss_rep_end + EPI_FE_PREP_RISE + EPI_FE_PREP_FLAT + EPI_FE_PREP_RISE  # 1.224
+        esp_s       = EPI_RO_FLAT + 2 * EPI_RO_RISE  # schematic ESP = 0.29
+
+        # ── RF: 90° sinc excitation ──────────────────────────────────────────
+        sinc_rf(ax_rf, EPI_RF_TC, 1.0, RF_HW_EXCITE, label="90°")
+
+        # ── Gss: positive SS lobe directly connected to negative half-area rephaser ──
+        # EPI_GSS_RISE/FLAT are EPI-specific (shorter than global GRAD_RISE/GRAD_SS_FLAT)
+        # Rephaser: same amplitude as SS lobe, flat = 0.17 → area = SS_area / 2
+        trap(ax_ss, EPI_GSS_T0, EPI_GSS_RISE, EPI_GSS_FLAT, EPI_GSS_RISE, GRAD_SS_AMP, c_ss)
+        trap(ax_ss, gss_end, EPI_GSS_REP_RISE, EPI_GSS_REP_FLAT,
+             EPI_GSS_REP_RISE, EPI_GSS_REP_AMP, c_ss)
+
+        # ── Gpe: large negative prephaser (ky → −ky_max), labelled Aₚ,ₚ ─────
+        trap(ax_pe, gss_rep_end, EPI_PE_PREP_RISE, EPI_PE_PREP_FLAT,
+             EPI_PE_PREP_RISE, EPI_PE_PREP_AMP, c_pe)
+        _pe_prep_cx = gss_rep_end + EPI_PE_PREP_RISE + EPI_PE_PREP_FLAT / 2
+        ax_pe.text(_pe_prep_cx, EPI_PE_PREP_AMP / 2, "Ap,p",
+                   color=c_pe, fontsize=FONT_ANN - 0.5, ha="center", va="center",
+                   fontstyle="italic")
+
+        # ── Gfe: large negative prephaser (kx → −kx_max) ────────────────────
+        trap(ax_fe, gss_rep_end, EPI_FE_PREP_RISE, EPI_FE_PREP_FLAT,
+             EPI_FE_PREP_RISE, EPI_FE_PREP_AMP, c_fe)
+
+        # ── Gfe: continuous zigzag readout waveform (single polyline, no gaps) ──
+        # Structure: 0 → +A (rise) → flat → −A (2×rise) → flat → +A (2×rise) → …
+        # Each inter-lobe ramp passes through 0 exactly once — the PE blip sits here.
+        _t_zz  = [prep_end]
+        _y_zz  = [0.0]
+        _t_cur = prep_end
+        echo_centers = []
+        blip_starts  = []
+
+        for i in range(EPI_N_SHOW):
+            _amp = EPI_RO_AMP if (i % 2 == 0) else -EPI_RO_AMP
+            if i == 0:
+                # First lobe: initial rise from 0
+                _t_zz.append(_t_cur + EPI_RO_RISE)
+                _y_zz.append(_amp)
+                _t_cur += EPI_RO_RISE
+            # else: already at _amp from previous transition — flat begins immediately
+            echo_centers.append(_t_cur + EPI_RO_FLAT / 2)
+            _t_zz.append(_t_cur + EPI_RO_FLAT)
+            _y_zz.append(_amp)
+            _t_cur += EPI_RO_FLAT
+            if i < EPI_N_SHOW - 1:
+                # Ramp directly to next polarity through zero (2 × EPI_RO_RISE)
+                blip_starts.append(_t_cur)
+                _t_zz.append(_t_cur + 2 * EPI_RO_RISE)
+                _y_zz.append(-_amp)
+                _t_cur += 2 * EPI_RO_RISE
+            else:
+                # Fall to zero after the last explicitly shown lobe
+                _t_zz.append(_t_cur + EPI_RO_RISE)
+                _y_zz.append(0.0)
+                _t_cur += EPI_RO_RISE
+
+        ax_fe.plot(_t_zz, _y_zz, color=c_fe, linewidth=WAVEFORM_LINEWIDTH)
+
+        # ── Gpe: equal positive blips, one per inter-readout transition ───────
+        for _bs in blip_starts:
+            trap(ax_pe, _bs, EPI_BLIP_RISE, EPI_BLIP_FLAT,
+                 EPI_BLIP_RISE, EPI_BLIP_AMP, c_pe)
+
+        # ── "..." continuation indicator ──────────────────────────────────────
+        for _ax_d, _col_d in ((ax_fe, c_fe), (ax_pe, c_pe), (ax_sig, "#FFFFFF")):
+            _ax_d.text(EPI_DOTS_X, 0.0, "· · ·", color=_col_d, fontsize=7,
+                       ha="center", va="center", fontstyle="italic")
+
+        # ── Final (Nth) readout — separate trap starting from 0 after "..." ───
+        final_center = EPI_FINAL_RO_T0 + EPI_RO_RISE + EPI_RO_FLAT / 2
+        trap(ax_fe, EPI_FINAL_RO_T0, EPI_RO_RISE, EPI_RO_FLAT,
+             EPI_RO_RISE, EPI_RO_AMP, c_fe)
+
+        # ── Signal: monotonically decreasing gradient echoes (T2* decay) ─────
+        _all_centers = echo_centers + [final_center]
+        _all_indices = list(range(EPI_N_SHOW)) + [epi_n_readouts - 1]
+        for _ec, _ei in zip(_all_centers, _all_indices):
+            _eamp = max(0.10, EPI_SIG_PEAK * np.exp(-_ei * EPI_SIG_DECAY))
+            grad_echo(ax_sig, _ec, _eamp, SIGNAL_HW_GRE * EPI_SIG_HW_SCALE)
+
+        # ── T2* decay dotted envelope above signal echoes ─────────────────────
+        _tau_env  = esp_s / EPI_SIG_DECAY                        # schematic time constant
+        _t_env_0  = echo_centers[0]                              # time of echo-0 centre
+        _t_env_end = echo_centers[-1] + EPI_RO_FLAT / 2         # end of last shown echo
+        _t_env    = np.linspace(_t_env_0, _t_env_end, 200)
+        _y_env    = EPI_SIG_PEAK * np.exp(-(_t_env - _t_env_0) / _tau_env)
+        ax_sig.plot(_t_env, _y_env, color="#AAAAAA", linewidth=0.5,
+                    linestyle=":", alpha=0.85)
+
+        # ── TEeff annotation: arrow from RF centre to epi_eff_idx echo ────────
+        _final_idx = epi_n_readouts - 1
+        if epi_eff_idx < EPI_N_SHOW:
+            te_pos = echo_centers[epi_eff_idx]
+        elif epi_eff_idx == _final_idx:
+            te_pos = final_center
+        else:
+            _frac  = ((epi_eff_idx - (EPI_N_SHOW - 1))
+                      / max(1, _final_idx - (EPI_N_SHOW - 1)))
+            te_pos = echo_centers[-1] + _frac * (final_center - echo_centers[-1])
+
+        vmark(EPI_RF_TC, c_rf)
+        vmark(te_pos, "#AAAAAA")
+        ax_sig.annotate("", xy=(te_pos, ANN_TE_Y), xytext=(EPI_RF_TC, ANN_TE_Y),
+                        arrowprops=dict(arrowstyle="<->", color="#AAAAAA",
+                                        lw=ARROW_LINEWIDTH))
+        ax_sig.text((EPI_RF_TC + te_pos) / 2, ANN_TE_Y - ANN_LABEL_OFFSET,
+                    f"TEeff = {TE} ms", color="#AAAAAA", fontsize=FONT_ANN,
+                    ha="center", va="top")
+
+        # ── TR arrow drawn on Gss row (between RF and Gss) ───────────────────
+        _epi_tr_end = EPI_FINAL_RO_T0 + EPI_RO_RISE + EPI_RO_FLAT + EPI_RO_RISE + 0.10
+        ann_tr(EPI_RF_TC, _epi_tr_end, ax=ax_ss)
+
+        # ── N/2 ghosting annotation ──────────────────────────────────────────
+        fig.text(0.50, 0.055,
+                 "N/2 ghost: phase inconsistencies between alternating ±Gfe readout directions "
+                 "shift the ghost N/2 pixels in the phase-encode direction",
+                 color="#FFAA44", fontsize=4.5, ha="center", va="bottom", style="italic")
+
+        axes[-1].set_xlim(0, EPI_XLIM_RIGHT)
+
     axes[-1].set_xticks([])
     fig.text(0.5, 0.01, "Time  →", color="#555555",
              fontsize=FONT_FOOTER, ha="center")
@@ -1133,17 +1296,20 @@ with st.sidebar:
     elif seq == "MPRAGE":
         _fm = max(2100, _tr_max)   # MPRAGE min TR = 2000 ms
         TR = st.slider("TR (ms)",  2000, _fm, min(2300, _fm), 100)
-    elif seq == "EPI":
+    elif seq == "EPI (single-shot)":
         _fm = max(600, min(3000, _tr_max))   # EPI: cap at min(3000, field max)
         TR = st.slider("TR (ms)",   500, _fm, min(2000, _fm), 100)
     else:                                    # FSE, GRE — directly tied to T1 recovery curve
         TR = st.slider("TR (ms)",   500, _tr_max, min(4000, _tr_max),  50)
 
     # Initialise variables that may not be set by every sequence branch
-    b   = 0
-    TI  = 0
-    TI1 = 0
-    TI2 = 0
+    b                 = 0
+    TI                = 0
+    TI1               = 0
+    TI2               = 0
+    n2_ghost_intensity = 0.0   # EPI N/2 ghost — overridden in EPI branch
+    _epi_eff_idx      = 1      # EPI k-space centre echo index — overridden in EPI branch
+    _epi_esp_ms       = EPI_NOMINAL_ESP_MS  # nominal EPI echo spacing (ms)
 
     if seq == "FSE":
         TE  = st.slider("TE eff. (ms)", 10, 300,  80, 5)
@@ -1233,16 +1399,33 @@ with st.sidebar:
         ETL = 1
         MPRAGE_TR_READOUT = 7  # ms — fixed gradient echo spacing within partition train
 
-    else:  # EPI
-        TE  = st.slider("TE (ms)", 15, 80, 30, 1)
+    else:  # EPI (single-shot)
+        TE  = st.slider("TEeff (ms)", 1, 200, 30, 1)
         FA  = 90
         ETL = 1
-        st.caption(f"Optimal TE for BOLD ≈ T2* of GM = {TISSUES['GM']['T2s']} ms")
+        n2_ghost_intensity = st.slider(
+            "N/2 Ghost Intensity (%)", 0, 30, 15, 1,
+            key="n2_ghost_slider"
+        ) / 100.0
+        st.caption(f"Optimal TEeff for BOLD ≈ T2* of GM = {TISSUES['GM']['T2s']} ms")
 
     freq_matrix  = st.slider("Frequency Matrix (px)", 64, 512, 256, 32)
     phase_matrix = st.slider("Phase Matrix (px)",     64, 512, 256, 32)
-    if seq == "EPI":
+    if seq == "EPI (single-shot)":
         ETL = phase_matrix  # single-shot EPI: all phase encodes in one TR, so scan time = TR × NEX
+        _epi_esp_ms   = EPI_NOMINAL_ESP_MS
+        _epi_eff_idx  = max(0, min(phase_matrix - 1,
+                                   round(TE / _epi_esp_ms) - 1))
+        _epi_max_teeff = phase_matrix * _epi_esp_ms
+        st.caption(
+            f"Echo spacing (ESP) = {_epi_esp_ms:.1f} ms  |  "
+            f"k-space centre: echo #{_epi_eff_idx + 1} of {phase_matrix}"
+        )
+        if TE > _epi_max_teeff:
+            st.error(
+                f"TEeff too long: maximum is {_epi_max_teeff:.0f} ms "
+                f"for {phase_matrix} phase encodes at ESP {_epi_esp_ms:.1f} ms"
+            )
 
     FOV_read  = st.slider("FOV Read (mm)",  180, 400, 400, 10)
     FOV_phase = st.slider("FOV Phase (mm)", 180, 400, 400, 10)
@@ -1579,8 +1762,16 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
     pva_sigma = (slice_mm - 1) * 0.25
     if pva_sigma > 0:
         img = gaussian_filter(img, sigma=pva_sigma)
+    # EPI N/2 ghost: phase inconsistencies between alternating ±Gfe readout
+    # directions produce a ghost shifted N/2 pixels in the phase-encode direction.
+    # The ghost is slightly blurred relative to the main image.
+    if seq == "EPI (single-shot)" and n2_ghost_intensity > 0:
+        _ghost_shift = img.shape[0] // 2            # N/2 = half the display height
+        _ghost = np.roll(img, _ghost_shift, axis=0)  # shift in phase-encode (row) direction
+        _ghost = gaussian_filter(_ghost, sigma=1.5)  # slight additional blur
+        img = np.clip(img + n2_ghost_intensity * _ghost, 0, 1)
     # Capture the clean axial image for k-space visualisation (no noise, full
-    # processing applied).  Must be saved before noise is added below.
+    # processing applied, including ghost if EPI).  Must be saved before noise.
     if plane_name == "Axial":
         _kspace_source_img = img.copy()
     if noise_std > 0:
@@ -1602,8 +1793,18 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
         st.pyplot(fig_p, use_container_width=True)
         plt.close(fig_p)
 
+# EPI N/2 ghost educational caption below the three-plane display
+if seq == "EPI (single-shot)":
+    st.caption(
+        "**N/2 ghosting (EPI):** Phase inconsistencies between alternating positive and negative "
+        "EPI readout directions produce a ghost image shifted N/2 pixels in the phase-encode "
+        "direction. Adjust the N/2 Ghost Intensity slider to explore how gradient calibration "
+        "errors affect image quality."
+    )
+
 # --- Pulse sequence diagram (between phantom images and signal bars) ---
-_psd_fig = draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=slice_mm, BW=BW, FOV_read=FOV_read)
+_psd_fig = draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=slice_mm, BW=BW, FOV_read=FOV_read,
+                               epi_eff_idx=_epi_eff_idx, epi_n_readouts=phase_matrix)
 if _psd_fig is not None:
     st.pyplot(_psd_fig, use_container_width=True)
     plt.close(_psd_fig)
@@ -1732,7 +1933,7 @@ with col_curves:
                 FA_r = np.radians(FA)
                 E1   = np.exp(-tr_range / p["T1"])
                 s    = p["PD"] * np.sin(FA_r) * (1 - E1) / (1 - np.cos(FA_r)*E1) * np.exp(-TE/p["T2s"])
-            elif seq == "EPI":
+            elif seq == "EPI (single-shot)":
                 s = p["PD"] * (1 - np.exp(-tr_range/p["T1"])) * np.exp(-TE/p["T2s"])
             else:  # FSE
                 s = p["PD"] * (1 - np.exp(-tr_range/p["T1"])) * np.exp(-TE/p["T2"])
@@ -1763,7 +1964,7 @@ with col_curves:
         ax_t2.set_title("Signal vs TR (bSSFP)", fontsize=9)
         ax_t2.set_xlabel("TR (ms)", fontsize=8)
 
-    elif seq == "EPI":
+    elif seq == "EPI (single-shot)":
         te_range_epi = np.linspace(1, 90, 500)
         for t in brain_tissues:
             p = TISSUES[t]
@@ -1863,8 +2064,8 @@ elif seq == "DWI":
     m7.metric("WM ADC", f"{TISSUES['WM']['ADC']*1000:.2f} ×10⁻³ mm²/s")
 elif seq == "MPRAGE":
     m7.metric("CSF null TI", f"{csf_null_ti(TR, TISSUES['CSF']['T1']):.0f} ms")
-elif seq == "EPI":
-    m7.metric("Opt TE (GM)", f"{TISSUES['GM']['T2s']} ms")
+elif seq == "EPI (single-shot)":
+    m7.metric("Opt TEeff (GM)", f"{TISSUES['GM']['T2s']} ms  (T2*)")
 else:
     m7.metric("Sequence", "FSE")
 
@@ -1921,11 +2122,13 @@ if clicked:
             extra_params = (f"TI: {TI} ms  TE: {TE} ms  FA: {FA}°  "
                             f"Partitions: {Npartitions}  3D acquisition  "
                             f"(CSF null TI ≈ {csf_n:.0f} ms)")
-        elif seq == "EPI":
-            extra_params = (f"TE: {TE} ms  FA: 90° (fixed)  "
+        elif seq == "EPI (single-shot)":
+            extra_params = (f"TEeff: {TE} ms  FA: 90° (fixed)  "
+                            f"ESP: {_epi_esp_ms:.1f} ms  "
+                            f"k-space centre echo: #{_epi_eff_idx + 1} of {phase_matrix}  "
                             f"T2* values: WM={TISSUES['WM']['T2s']} ms, "
                             f"GM={TISSUES['GM']['T2s']} ms  "
-                            f"Optimal BOLD TE ≈ {TISSUES['GM']['T2s']} ms")
+                            f"Optimal BOLD TEeff ≈ {TISSUES['GM']['T2s']} ms")
         else:  # FSE
             extra_params = f"ETL: {ETL}"
 
