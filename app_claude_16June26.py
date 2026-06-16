@@ -2,7 +2,6 @@
 # web UI, and the Claude API.
 import os
 import json
-import html
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -139,55 +138,6 @@ TR_MAX_BY_FIELD = {
 SNR_SCALE = 200.0
 
 # ---------------------------------------------------------------------------
-# Teaching protocol presets
-# ---------------------------------------------------------------------------
-# These are realistic starting points for common educational contrasts. The
-# user can still adjust every control after choosing a preset.
-PROTOCOL_PRESETS = {
-    "Custom": {},
-    "T1 FSE brain": {
-        "seq": "FSE", "TR": 600, "TE": 15, "ETL": 4,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 256, "phase_matrix": 256,
-        "slice_mm": 5, "NEX": 1, "BW": 200, "pf_label": "8/8 (Full)",
-    },
-    "T2 FSE brain": {
-        "seq": "FSE", "TR": 4000, "TE": 100, "ETL": 16,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 320, "phase_matrix": 256,
-        "slice_mm": 5, "NEX": 1, "BW": 200, "pf_label": "8/8 (Full)",
-    },
-    "FLAIR brain": {
-        "seq": "FLAIR", "TR": 9000, "TE": 90, "TI": 2500, "ETL": 16,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 256, "phase_matrix": 256,
-        "slice_mm": 5, "NEX": 1, "BW": 200,
-    },
-    "STIR fat suppression": {
-        "seq": "STIR", "TR": 3000, "TE": 60, "TI": 210, "ETL": 8,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 256, "phase_matrix": 224,
-        "slice_mm": 5, "NEX": 1, "BW": 200, "fat_sat": True,
-    },
-    "GRE T2*": {
-        "seq": "GRE", "TR": 700, "TE": 25, "FA": 25,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 256, "phase_matrix": 192,
-        "slice_mm": 5, "NEX": 1, "BW": 200, "pf_label": "8/8 (Full)",
-    },
-    "DWI b1000": {
-        "seq": "DWI", "TR": 5000, "TE": 80, "b": 1000,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 128, "phase_matrix": 128,
-        "slice_mm": 5, "NEX": 2, "BW": 250,
-    },
-    "MPRAGE 3D T1": {
-        "seq": "MPRAGE", "TR": 2300, "TE": 3, "TI": 900, "FA": 9,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 256, "phase_matrix": 256,
-        "Npartitions": 176, "NEX": 1, "BW": 200,
-    },
-    "EPI BOLD": {
-        "seq": "EPI (single-shot)", "TR": 2000, "TE": 30,
-        "FOV_read": 400, "FOV_phase": 400, "freq_matrix": 128, "phase_matrix": 128,
-        "slice_mm": 4, "NEX": 1, "BW": 250, "n2_ghost_pct": 10, "pf_label": "8/8 (Full)",
-    },
-}
-
-# ---------------------------------------------------------------------------
 # Reference constants for the three-step Signal / Noise / SNR architecture
 # ---------------------------------------------------------------------------
 # Step 1 — Signal = physics_signal(tissue, seq) × voxel_vol / ref_voxel
@@ -285,6 +235,11 @@ def csf_null_ti(TR, T1):
 
 def ernst_angle(TR, T1):
     return np.degrees(np.arccos(np.exp(-TR / T1)))
+
+def calc_snr(signal, FOV, matrix, slice_mm, NEX, BW, Npartitions=1):
+    pixel_mm  = FOV / matrix
+    voxel_vol = pixel_mm * pixel_mm * slice_mm
+    return signal * voxel_vol * np.sqrt(NEX * Npartitions) / np.sqrt(BW) * SNR_SCALE
 
 def calc_scan_time(TR, phase_matrix, ETL, NEX, seq, Npartitions=1):
     if seq == "GRE":
@@ -1253,184 +1208,6 @@ def style_ax(ax):
     ax.yaxis.label.set_color("white")
     ax.title.set_color("white")
 
-def _parameter_snapshot(
-        protocol_name, seq, field_strength, TR, TE, TI, TI1, TI2, FA, b,
-        NEX, BW, freq_matrix, phase_matrix, FOV_read, FOV_phase, slice_mm,
-        Npartitions, fat_sat, pf_fraction, scan_sec):
-    """Capture teaching-relevant state for local change explanations."""
-    return {
-        "protocol_name": protocol_name,
-        "seq": seq,
-        "field_strength": field_strength,
-        "TR": TR,
-        "TE": TE,
-        "TI": TI,
-        "TI1": TI1,
-        "TI2": TI2,
-        "FA": FA,
-        "b": b,
-        "NEX": NEX,
-        "BW": BW,
-        "freq_matrix": freq_matrix,
-        "phase_matrix": phase_matrix,
-        "FOV_read": FOV_read,
-        "FOV_phase": FOV_phase,
-        "slice_mm": slice_mm,
-        "Npartitions": Npartitions,
-        "fat_sat": fat_sat,
-        "pf_fraction": pf_fraction,
-        "scan_sec": scan_sec,
-    }
-
-def _changed(prev, curr, key):
-    return prev is not None and prev.get(key) != curr.get(key)
-
-def explain_parameter_changes(prev, curr):
-    """Return short deterministic teaching notes for changed MRI parameters."""
-    if prev is None:
-        return []
-
-    notes = []
-
-    if _changed(prev, curr, "protocol_name"):
-        notes.append(
-            f"Protocol preset changed to {curr['protocol_name']}. The controls now start from a typical teaching example, but every parameter remains editable."
-        )
-
-    if _changed(prev, curr, "seq"):
-        notes.append(
-            f"Sequence changed from {prev['seq']} to {curr['seq']}. Signal weighting and the available timing controls now follow the selected pulse sequence."
-        )
-
-    if _changed(prev, curr, "field_strength"):
-        notes.append(
-            f"Field strength changed from {prev['field_strength']} to {curr['field_strength']}. Tissue T1/T2/T2* values and the simulated SNR scale update with B0."
-        )
-
-    if _changed(prev, curr, "TR"):
-        if curr["TR"] > prev["TR"]:
-            notes.append(
-                f"TR increased from {prev['TR']} to {curr['TR']} ms. Longer TR allows more T1 recovery, usually reducing T1 weighting and increasing signal."
-            )
-        else:
-            notes.append(
-                f"TR decreased from {prev['TR']} to {curr['TR']} ms. Shorter TR increases T1 saturation, often strengthening T1 weighting but lowering signal."
-            )
-
-    if _changed(prev, curr, "TE"):
-        te_label = "TEeff" if curr["seq"] in ("FSE", "FLAIR", "STIR", "DIR", "EPI (single-shot)") else "TE"
-        decay = "T2*" if curr["seq"] in ("GRE", "EPI (single-shot)", "MPRAGE") else "T2"
-        if curr["TE"] > prev["TE"]:
-            notes.append(
-                f"{te_label} increased from {prev['TE']} to {curr['TE']} ms. Longer echo time allows more {decay} decay, lowering signal and strengthening {decay}-weighted contrast."
-            )
-        else:
-            notes.append(
-                f"{te_label} decreased from {prev['TE']} to {curr['TE']} ms. Shorter echo time preserves signal and reduces {decay}-decay weighting."
-            )
-
-    if _changed(prev, curr, "TI") and curr["seq"] in ("FLAIR", "STIR", "MPRAGE"):
-        target = "CSF" if curr["seq"] in ("FLAIR", "MPRAGE") else "fat"
-        notes.append(
-            f"TI changed from {prev['TI']} to {curr['TI']} ms. In inversion recovery imaging, TI controls which tissue is near its null point; here the main teaching target is {target} suppression."
-        )
-
-    if (_changed(prev, curr, "TI1") or _changed(prev, curr, "TI2")) and curr["seq"] == "DIR":
-        notes.append(
-            "DIR inversion timing changed. TI1 and TI2 jointly shape double-inversion contrast and determine which tissue signal is suppressed."
-        )
-
-    if _changed(prev, curr, "FA") and curr["seq"] in ("GRE", "bSSFP", "MPRAGE"):
-        if curr["FA"] > prev["FA"]:
-            notes.append(
-                f"Flip angle increased from {prev['FA']}° to {curr['FA']}°. Larger flip angles increase transverse signal up to an optimum, but also increase saturation in short-TR sequences."
-            )
-        else:
-            notes.append(
-                f"Flip angle decreased from {prev['FA']}° to {curr['FA']}°. Smaller flip angles reduce saturation and can improve steady-state efficiency, but may lower immediate signal."
-            )
-
-    if _changed(prev, curr, "b") and curr["seq"] == "DWI":
-        if curr["b"] > prev["b"]:
-            notes.append(
-                f"b-value increased from {prev['b']} to {curr['b']} s/mm². Diffusion attenuation is stronger, so freely diffusing tissues such as CSF lose more signal."
-            )
-        else:
-            notes.append(
-                f"b-value decreased from {prev['b']} to {curr['b']} s/mm². Diffusion weighting is reduced and the image moves closer to T2-weighted signal."
-            )
-
-    if _changed(prev, curr, "NEX"):
-        ratio = np.sqrt(curr["NEX"] / prev["NEX"])
-        if curr["NEX"] > prev["NEX"]:
-            notes.append(
-                f"NEX increased from {prev['NEX']} to {curr['NEX']}. SNR improves by about {ratio:.2f}×, while scan time increases in proportion to NEX."
-            )
-        else:
-            notes.append(
-                f"NEX decreased from {prev['NEX']} to {curr['NEX']}. Scan time falls, but SNR drops by about {1/ratio:.2f}×."
-            )
-
-    if _changed(prev, curr, "BW"):
-        if curr["BW"] > prev["BW"]:
-            notes.append(
-                f"Bandwidth increased from {prev['BW']} to {curr['BW']} Hz/px. Higher bandwidth reduces chemical shift and distortion sensitivity, but increases noise."
-            )
-        else:
-            notes.append(
-                f"Bandwidth decreased from {prev['BW']} to {curr['BW']} Hz/px. Lower bandwidth improves SNR, but increases chemical shift and distortion sensitivity."
-            )
-
-    if _changed(prev, curr, "freq_matrix") or _changed(prev, curr, "phase_matrix"):
-        notes.append(
-            f"Matrix changed to {curr['freq_matrix']}×{curr['phase_matrix']}. Larger matrices improve in-plane resolution but reduce voxel size and can lower SNR; phase matrix also affects scan time."
-        )
-
-    if _changed(prev, curr, "FOV_read") or _changed(prev, curr, "FOV_phase"):
-        notes.append(
-            f"FOV changed to {curr['FOV_read']}×{curr['FOV_phase']} mm. Smaller FOV improves pixel size for a fixed matrix but can increase wraparound risk in the phase direction."
-        )
-
-    if _changed(prev, curr, "slice_mm"):
-        if curr["slice_mm"] > prev["slice_mm"]:
-            notes.append(
-                f"Slice thickness increased from {prev['slice_mm']} to {curr['slice_mm']} mm. Thicker slices improve SNR but increase partial-volume blurring."
-            )
-        else:
-            notes.append(
-                f"Slice thickness decreased from {prev['slice_mm']} to {curr['slice_mm']} mm. Thinner slices reduce partial volume but lower SNR."
-            )
-
-    if _changed(prev, curr, "Npartitions") and curr["seq"] == "MPRAGE":
-        notes.append(
-            f"Partitions changed to {curr['Npartitions']}. More partitions make thinner 3D partitions for the fixed slab, improving through-plane sampling but reducing voxel volume and SNR."
-        )
-
-    if _changed(prev, curr, "fat_sat"):
-        state = "enabled" if curr["fat_sat"] else "disabled"
-        notes.append(
-            f"Fat saturation {state}. Fat signal is selectively suppressed, which changes fat contrast and can make fluid-sensitive sequences easier to interpret."
-        )
-
-    if _changed(prev, curr, "pf_fraction"):
-        if curr["pf_fraction"] < prev["pf_fraction"]:
-            notes.append(
-                f"Partial Fourier was reduced to {curr['pf_fraction']:.3f}. Fewer phase lines shorten scan time but reduce SNR and can increase ringing or reconstruction artifacts."
-            )
-        else:
-            notes.append(
-                f"Partial Fourier was increased to {curr['pf_fraction']:.3f}. More k-space is acquired, improving SNR/artifact behavior at the cost of scan time."
-            )
-
-    if _changed(prev, curr, "scan_sec") and prev["scan_sec"] > 0:
-        pct = 100 * (curr["scan_sec"] - prev["scan_sec"]) / prev["scan_sec"]
-        if abs(pct) >= 10:
-            notes.append(
-                f"Estimated scan time changed by {pct:+.0f}%. Timing, phase encodes, NEX, partitions, ETL, and partial Fourier all contribute to this estimate."
-            )
-
-    return notes[:5]
-
 # ---------------------------------------------------------------------------
 # Session state — window/level auto-update on parameter change
 # ---------------------------------------------------------------------------
@@ -1470,43 +1247,19 @@ _ga4_events = []
 with st.sidebar:
     st.markdown("### MRI Parameters")
 
-    st.markdown("**Protocol Preset**")
-    protocol_name = st.selectbox(
-        "Protocol Preset",
-        list(PROTOCOL_PRESETS.keys()),
-        index=0,
-        label_visibility="collapsed",
-        key="protocol_preset",
-    )
-    _preset = PROTOCOL_PRESETS[protocol_name]
-
-    if st.session_state.get("_last_protocol_preset") != protocol_name:
-        st.session_state.field_strength = _preset.get("field_strength", "3.0T")
-        st.session_state.sequence = _preset.get("seq", "FSE")
-        if "n2_ghost_pct" in _preset:
-            st.session_state.n2_ghost_slider = _preset["n2_ghost_pct"]
-        st.session_state._last_protocol_preset = protocol_name
-
     st.markdown("**Field Strength**")
-    _field_options = ["0.064T", "0.5T", "1.0T", "1.5T", "3.0T"]
     field_strength = st.radio(
         "",
-        _field_options,
-        index=_field_options.index(_preset.get("field_strength", "3.0T")),
+        ["0.064T", "0.5T", "1.0T", "1.5T", "3.0T"],
+        index=4,          # default: 3.0T
         horizontal=True,
         key="field_strength",
     )
     _tr_max = TR_MAX_BY_FIELD[field_strength]
 
     st.markdown("**Sequence**")
-    _seq_options = ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI (single-shot)"]
-    seq = st.radio(
-        "",
-        _seq_options,
-        index=_seq_options.index(_preset.get("seq", "FSE")),
-        horizontal=True,
-        key="sequence",
-    )
+    seq = st.radio("", ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI (single-shot)"],
+                   horizontal=True)
 
     if st.session_state.ga4_prev_seq is not None and seq != st.session_state.ga4_prev_seq:
         _ga4_events.append(("sequence_change", {"sequence": seq}))
@@ -1528,26 +1281,26 @@ with st.sidebar:
     # that the slider always has a valid range even at very low field strengths
     # where _tr_max may be shorter than the sequence's physiological minimum TR.
     if   seq == "FLAIR":
-        TR = st.slider("TR (ms)",  3000, 10000, _preset.get("TR", 9000), 100)  # fixed range — FLAIR needs long TR at all field strengths
+        TR = st.slider("TR (ms)",  3000, 10000, 9000, 100)  # fixed range — FLAIR needs long TR at all field strengths
     elif seq == "STIR":
         _fm = max(1050, _tr_max)   # STIR min TR = 1000 ms
-        TR = st.slider("TR (ms)",  1000, _fm, min(_preset.get("TR", 3000), _fm),  50)
+        TR = st.slider("TR (ms)",  1000, _fm, min(3000, _fm),  50)
     elif seq == "bSSFP":
-        TR = st.slider("TR (ms)",     3,   20, _preset.get("TR", 5),   1)   # hardware-constrained; field-strength cap irrelevant
+        TR = st.slider("TR (ms)",     3,   20,     5,   1)   # hardware-constrained; field-strength cap irrelevant
     elif seq == "DIR":
         _fm = max(5100, _tr_max)   # DIR min TR = 5000 ms
-        TR = st.slider("TR (ms)",  5000, _fm, min(_preset.get("TR", 8000), _fm), 100)
+        TR = st.slider("TR (ms)",  5000, _fm, min(8000, _fm), 100)
     elif seq == "DWI":
         _fm = max(3100, _tr_max)   # DWI min TR = 3000 ms
-        TR = st.slider("TR (ms)",  3000, _fm, min(_preset.get("TR", 5000), _fm), 100)
+        TR = st.slider("TR (ms)",  3000, _fm, min(5000, _fm), 100)
     elif seq == "MPRAGE":
         _fm = max(2100, _tr_max)   # MPRAGE min TR = 2000 ms
-        TR = st.slider("TR (ms)",  2000, _fm, min(_preset.get("TR", 2300), _fm), 100)
+        TR = st.slider("TR (ms)",  2000, _fm, min(2300, _fm), 100)
     elif seq == "EPI (single-shot)":
         _fm = max(600, min(3000, _tr_max))   # EPI: cap at min(3000, field max)
-        TR = st.slider("TR (ms)",   500, _fm, min(_preset.get("TR", 2000), _fm), 100)
+        TR = st.slider("TR (ms)",   500, _fm, min(2000, _fm), 100)
     else:                                    # FSE, GRE — directly tied to T1 recovery curve
-        TR = st.slider("TR (ms)",   500, _tr_max, min(_preset.get("TR", 4000), _tr_max),  50)
+        TR = st.slider("TR (ms)",   500, _tr_max, min(4000, _tr_max),  50)
 
     # Initialise variables that may not be set by every sequence branch
     b                 = 0
@@ -1559,8 +1312,8 @@ with st.sidebar:
     _epi_esp_ms       = EPI_NOMINAL_ESP_MS  # nominal EPI echo spacing (ms)
 
     if seq == "FSE":
-        TE  = st.slider("TE eff. (ms)", 10, 300, _preset.get("TE", 80), 5)
-        ETL = st.slider("ETL",           1,  32, _preset.get("ETL", 16), 1)
+        TE  = st.slider("TE eff. (ms)", 10, 300,  80, 5)
+        ETL = st.slider("ETL",           1,  32,  16, 1)
         st.caption("Pulse sequence diagram shows a maximum of 6 echoes for readability.")
         FA  = 90
         # Derived FSE timing parameters
@@ -1575,8 +1328,8 @@ with st.sidebar:
             st.error("Echo spacing too short to be physically realistic — minimum ESP is approximately 10 ms")
 
     elif seq == "GRE":
-        TE  = st.slider("TE (ms)",       2, 100, _preset.get("TE", 5), 1)
-        FA  = st.slider("Flip Angle (°)",1,  90, _preset.get("FA", 30), 1)
+        TE  = st.slider("TE (ms)",       2, 100,   5, 1)
+        FA  = st.slider("Flip Angle (°)",1,  90,  30, 1)
         ETL = 1
         _gre_gss_end  = GRE_GSS_T0 + GRE_GSS_RISE + GRE_GSS_FLAT + GRE_GSS_RISE
         _gre_rep_rise = abs(GRE_GSS_REP_AMP) / GRE_GSS_REF_AMP * GRE_GSS_RISE
@@ -1589,9 +1342,9 @@ with st.sidebar:
             st.error(f"TE too short: minimum achievable TE is {_gre_te_min_ms:.0f} ms")
 
     elif seq == "FLAIR":
-        TI  = st.slider("TI (ms)",     500, 4000, _preset.get("TI", 2500),  50)
-        TE  = st.slider("TE eff. (ms)", 25,  250, _preset.get("TE", 90),   5)
-        ETL = st.slider("ETL",           1,   32, _preset.get("ETL", 16),   1)
+        TI  = st.slider("TI (ms)",     500, 4000, 2500,  50)
+        TE  = st.slider("TE eff. (ms)", 25,  250,   90,   5)
+        ETL = st.slider("ETL",           1,   32,   16,   1)
         FA  = 90
         _flair_eff_idx = max(0, min(min(ETL, FSE_MAX_ECHOES_TO_SHOW) - 1,
                                     round(TE / FLAIR_NOMINAL_ESP_MS) - 1))
@@ -1604,9 +1357,9 @@ with st.sidebar:
             st.error("Echo spacing too short to be physically realistic — minimum ESP is approximately 10 ms")
 
     elif seq == "STIR":
-        TI  = st.slider("TI (ms)",      50,  400, _preset.get("TI", 210),  10)
-        TE  = st.slider("TE eff. (ms)", 25,  250, _preset.get("TE", 60),   5)
-        ETL = st.slider("ETL",           1,   32, _preset.get("ETL", 8),   1)
+        TI  = st.slider("TI (ms)",      50,  400,  210,  10)
+        TE  = st.slider("TE eff. (ms)", 25,  250,   60,   5)
+        ETL = st.slider("ETL",           1,   32,    8,   1)
         FA  = 90
         _stir_eff_idx = max(0, min(min(ETL, FSE_MAX_ECHOES_TO_SHOW) - 1,
                                    round(TE / FLAIR_NOMINAL_ESP_MS) - 1))
@@ -1619,45 +1372,45 @@ with st.sidebar:
             st.error("Echo spacing too short to be physically realistic — minimum ESP is approximately 10 ms")
 
     elif seq == "bSSFP":
-        FA  = st.slider("Flip Angle (°)", 10, 90, _preset.get("FA", 50), 1)
+        FA  = st.slider("Flip Angle (°)", 10, 90, 50, 1)
         TE  = TR / 2
         ETL = 1
         st.caption(f"TE = TR/2 = {TE:.1f} ms  (fixed by sequence design)")
 
     elif seq == "DIR":
-        TI1 = st.slider("TI1 (ms)", 2000, 5000, _preset.get("TI1", 3400), 50)
-        TI2 = st.slider("TI2 (ms)",  100, 2500, _preset.get("TI2", 800), 50)
-        TE  = st.slider("TE eff. (ms)", 10, 100, _preset.get("TE", 25),  5)
-        ETL = st.slider("ETL",           1,  32, _preset.get("ETL", 8),  1)
+        TI1 = st.slider("TI1 (ms)", 2000, 5000, 3400, 50)
+        TI2 = st.slider("TI2 (ms)",  100, 2500,  800, 50)
+        TE  = st.slider("TE eff. (ms)", 10, 100,  25,  5)
+        ETL = st.slider("ETL",           1,  32,   8,  1)
         FA  = 90
         TI  = TI1
 
     elif seq == "DWI":
-        b   = st.slider("b-value (s/mm²)", 0, 3000, _preset.get("b", 1000), 100)
-        TE  = st.slider("TE (ms)",        50,  150, _preset.get("TE", 80),   5)
+        b   = st.slider("b-value (s/mm²)", 0, 3000, 1000, 100)
+        TE  = st.slider("TE (ms)",        50,  150,   80,   5)
         ETL = 1
         FA  = 90
         st.caption(f"Diffusion attenuation: exp(−b×ADC)  |  b={b} s/mm²")
 
     elif seq == "MPRAGE":
-        TI  = st.slider("TI (ms)",        200, 2500, _preset.get("TI", 900), 10)
-        TE  = st.slider("TE (ms)",          2,    18, _preset.get("TE", 3),  1)
-        FA  = st.slider("Flip Angle (°)",   5,   15, _preset.get("FA", 9),  1)
+        TI  = st.slider("TI (ms)",        200, 2500,  900, 10)
+        TE  = st.slider("TE (ms)",          2,    18,    3,  1)
+        FA  = st.slider("Flip Angle (°)",   5,   15,    9,  1)
         ETL = 1
         MPRAGE_TR_READOUT = 7  # ms — fixed gradient echo spacing within partition train
 
     else:  # EPI (single-shot)
-        TE  = st.slider("TEeff (ms)", 1, 200, _preset.get("TE", 30), 1)
+        TE  = st.slider("TEeff (ms)", 1, 200, 30, 1)
         FA  = 90
         ETL = 1
         n2_ghost_intensity = st.slider(
-            "N/2 Ghost Intensity (%)", 0, 30, _preset.get("n2_ghost_pct", 15), 1,
+            "N/2 Ghost Intensity (%)", 0, 30, 15, 1,
             key="n2_ghost_slider"
         ) / 100.0
         st.caption(f"Optimal TEeff for BOLD ≈ T2* of GM = {TISSUES['GM']['T2s']} ms")
 
-    freq_matrix  = st.slider("Frequency Matrix (px)", 64, 512, _preset.get("freq_matrix", 256), 32)
-    phase_matrix = st.slider("Phase Matrix (px)",     64, 512, _preset.get("phase_matrix", 256), 32)
+    freq_matrix  = st.slider("Frequency Matrix (px)", 64, 512, 256, 32)
+    phase_matrix = st.slider("Phase Matrix (px)",     64, 512, 256, 32)
     if seq == "EPI (single-shot)":
         ETL = phase_matrix  # single-shot EPI: all phase encodes in one TR, so scan time = TR × NEX
         _epi_esp_ms   = EPI_NOMINAL_ESP_MS
@@ -1673,20 +1426,19 @@ with st.sidebar:
                 f"TEeff too long: maximum is {_epi_max_teeff:.0f} ms "
                 f"for {phase_matrix} phase encodes at ESP {_epi_esp_ms:.1f} ms"
             )
-            st.stop()
 
-    FOV_read  = st.slider("FOV Read (mm)",  180, 400, _preset.get("FOV_read", 400), 10)
-    FOV_phase = st.slider("FOV Phase (mm)", 180, 400, _preset.get("FOV_phase", 400), 10)
+    FOV_read  = st.slider("FOV Read (mm)",  180, 400, 400, 10)
+    FOV_phase = st.slider("FOV Phase (mm)", 180, 400, 400, 10)
     st.caption(
         f"Frequency pixel: {FOV_read / freq_matrix:.2f} mm  |  "
         f"Phase pixel: {FOV_phase / phase_matrix:.2f} mm"
     )
 
     if is_3d:
-        Npartitions = st.slider("Partitions", 32, 256, _preset.get("Npartitions", 176), 8)
+        Npartitions = st.slider("Partitions", 32, 256, 176, 8)
         slice_mm    = 1.0
     else:
-        slice_mm    = st.slider("Slice (mm)", 1, 10, _preset.get("slice_mm", 5), 1)
+        slice_mm    = st.slider("Slice (mm)", 1, 10, 5, 1)
         Npartitions = 1
 
     if seq == "MPRAGE":
@@ -1704,18 +1456,13 @@ with st.sidebar:
             f"({readout_train_ms} ms) → remaining T1 recovery → next inversion pulse."
         )
 
-    NEX     = st.slider("NEX",               1,   8, _preset.get("NEX", 1),  1)
-    BW      = st.slider("Bandwidth (Hz/px)", 50, 500, _preset.get("BW", 200), 10)
-    fat_sat = st.checkbox("Fat Saturation", value=_preset.get("fat_sat", False))
+    NEX     = st.slider("NEX",               1,   8,   1,  1)
+    BW      = st.slider("Bandwidth (Hz/px)", 50, 500, 200, 10)
+    fat_sat = st.checkbox("Fat Saturation")
 
     _PF_OPTIONS = {"8/8 (Full)": 1.0, "7/8": 7/8, "6/8": 6/8, "5/8": 5/8}
     if seq in ("FSE", "GRE", "EPI (single-shot)"):
-        _pf_labels   = list(_PF_OPTIONS.keys())
-        _pf_label    = st.selectbox(
-            "Partial Fourier (phase)",
-            _pf_labels,
-            index=_pf_labels.index(_preset.get("pf_label", "8/8 (Full)")),
-        )
+        _pf_label    = st.selectbox("Partial Fourier (phase)", list(_PF_OPTIONS.keys()), index=0)
         pf_fraction  = _PF_OPTIONS[_pf_label]
         if pf_fraction < 1.0:
             st.caption(
@@ -1906,10 +1653,10 @@ signals    = {t: round(base_signals[t] * _vol_scale * np.sqrt(pf_fraction), 2) f
 # Depends ONLY on BW, NEX, and field strength — not on FOV, matrix, slice,
 # Npartitions, TR, TE, TI, or flip angle.
 # _noise_ref_scaled incorporates the B0-dependent SNR penalty (SNR ∝ B0).
-noise_floor = _noise_ref_scaled * np.sqrt(BW / BW_REF) / np.sqrt(NEX / NEX_REF)
+noise_floor = round(_noise_ref_scaled * np.sqrt(BW / BW_REF) / np.sqrt(NEX / NEX_REF), 2)
 
 # STEP 3 — SNR = Signal / Noise, derived directly with no other dependencies.
-# Keep noise_floor full precision so low-noise settings do not round to zero.
+# signals and noise_floor are pre-rounded to 2 dp so displayed values are exact inputs.
 snrs = {t: signals[t] / noise_floor if noise_floor > 0 else 0.0 for t in signals}
 
 names    = list(TISSUES.keys())
@@ -1922,17 +1669,6 @@ scan_s   = int(scan_sec % 60)
 cnr_wm_gm  = abs(snrs["WM"] - snrs["GM"])
 cnr_wm_csf = abs(snrs["WM"] - snrs["CSF"])
 cnr_gm_csf = abs(snrs["GM"] - snrs["CSF"])
-
-_current_teaching_snapshot = _parameter_snapshot(
-    protocol_name, seq, field_strength, TR, TE, TI, TI1, TI2, FA, b,
-    NEX, BW, freq_matrix, phase_matrix, FOV_read, FOV_phase, slice_mm,
-    Npartitions, fat_sat, pf_fraction, scan_sec,
-)
-_what_changed_notes = explain_parameter_changes(
-    st.session_state.get("teaching_prev_snapshot"),
-    _current_teaching_snapshot,
-)
-st.session_state.teaching_prev_snapshot = _current_teaching_snapshot
 
 # ---------------------------------------------------------------------------
 # Brain phantom image
@@ -1959,11 +1695,6 @@ st.markdown(
     f"<h3 style='text-align: center;'>MRI Simulator — Brain ({field_strength})</h3>",
     unsafe_allow_html=True,
 )
-
-if _what_changed_notes:
-    with st.expander("What changed?", expanded=True):
-        for _note in _what_changed_notes:
-            st.info(_note)
 
 # ---------------------------------------------------------------------------
 # Main layout: three planes (row 1) + bars/curves (row 2)
@@ -2085,7 +1816,7 @@ with col_bars:
     fig_sig, ax_sig = plt.subplots(figsize=(2.5, 1.5), facecolor="#1e1e1e")
     sig_vals = [signals[t] for t in names]
     bars = ax_sig.bar(names, sig_vals, color=colors, width=0.5)
-    ax_sig.set_title(f"Signal (Noise floor = {noise_floor:.3g})", fontsize=9)
+    ax_sig.set_title(f"Signal (Noise floor = {noise_floor:.2f})", fontsize=9)
 
     # noise_floor already computed in Step 2 — use directly.
     _sig_max    = max(max(sig_vals), noise_floor) if sig_vals else 1.0
@@ -2409,7 +2140,7 @@ TR: {TR} ms
 TE: {TE} ms
 {extra_params}
 
-Tissue properties at {field_strength}:
+Tissue properties at 3T:
 - White Matter (WM):  T1={TISSUES['WM']['T1']} ms, T2={TISSUES['WM']['T2']} ms, T2*={TISSUES['WM']['T2s']} ms, Signal={signals['WM']:.3f}
 - Gray Matter (GM):   T1={TISSUES['GM']['T1']} ms, T2={TISSUES['GM']['T2']} ms, T2*={TISSUES['GM']['T2s']} ms, Signal={signals['GM']:.3f}
 - CSF:                T1={TISSUES['CSF']['T1']} ms, T2={TISSUES['CSF']['T2']} ms, T2*={TISSUES['CSF']['T2s']} ms, Signal={signals['CSF']:.3f}
@@ -2422,27 +2153,21 @@ Explain:
 Write at a level suitable for a radiology resident or MRI student. Be concise and clear."""
 
         status.markdown("⏳ Claude is generating an explanation...")
-        try:
-            client = anthropic.Anthropic(api_key=api_key)
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            st.session_state.explanation = message.content[0].text
-            status.markdown("✅ Explanation ready")
-        except anthropic.APIError as exc:
-            status.error(f"Claude API error: {exc}")
-        except Exception as exc:
-            status.error(f"Could not generate explanation: {exc}")
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        st.session_state.explanation = message.content[0].text
+        status.markdown("✅ Explanation ready")
 
 if st.session_state.explanation:
-    escaped_explanation = html.escape(st.session_state.explanation).replace("\n", "<br>")
     st.markdown(f"""
     <div style='background-color:#1e1e1e; border-left:4px solid #4a90d9;
                 padding:1rem 1.2rem; border-radius:6px; color:white;
                 font-size:0.95rem; line-height:1.6;'>
-    {escaped_explanation}
+    {st.session_state.explanation.replace(chr(10), "<br>")}
     </div>
     """, unsafe_allow_html=True)
 
