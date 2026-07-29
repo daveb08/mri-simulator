@@ -212,6 +212,7 @@ NOISE_REF = np.sqrt(BW_REF) / (REF_VOXEL_VOL * SNR_SCALE)  # ≈ 0.01609
 # and SNR, but Noise is completely unaffected.
 MPRAGE_SLAB_MM       = 176.0   # fixed slab coverage (mm) — default 176 × 1 mm
 MPRAGE_NPART_DEFAULT = 176     # partition count at default slider position
+MPRAGE_TR_READOUT    = 7       # ms — fixed gradient echo spacing within the partition-encode readout train
 
 # Step 3 — SNR = Signal / Noise  (computed directly, no circular dependencies)
 
@@ -546,12 +547,46 @@ EPI_SIG_PEAK        = 2.00   # signal amplitude at first (echo 0) readout: DAVE 
 EPI_SIG_DECAY       = 0.35   # per-echo T2* decay exponent (steeper — fast T2* decay)
 EPI_SIG_HW_SCALE    = 0.16   # echo hw multiplier: full_width=0.207 < ESP_s=0.29 → 28% gap
 
+# ── Section 6: MPRAGE constants ───────────────────────────────────────────
+MPRAGE_T_INV1           = 0.45   # time-centre of non-selective 180° hard inversion pulse (= DIR_T_INV1)
+MPRAGE_TI_MIN_S         = 1.0    # minimum schematic TI span (clears the non-selective Gss lobe)
+MPRAGE_TI_RANGE         = 4.0    # T_TOTAL minus this sets the usable schematic TI span
+MPRAGE_TI_CLAMP_MIN     = 1.0    # lower clamp on schematic TI span
+MPRAGE_TI_CLAMP_MAX     = 6.0    # upper clamp on schematic TI span
+MPRAGE_RF_AMP_MIN       = 0.30   # small-flip sinc display amplitude at FA = 5°
+MPRAGE_RF_AMP_PER_DEG   = 0.02   # display amplitude added per degree of FA above 5°
+# One GRE-train repetition — same dephase→readout / encode→rewind shape as
+# standalone GRE, sized compact so a multi-repetition train fits on the axis.
+MPRAGE_REP_RF_HW        = 0.10   # small-flip sinc RF half-width
+MPRAGE_REP_GSS_RISE     = 0.04   # Gss slice-select rise/fall
+MPRAGE_REP_GSS_FLAT     = 0.20   # Gss slice-select flat-top (= 2 × RF half-width)
+MPRAGE_REP_GSS_REP_RISE = 0.03   # Gss rephaser rise/fall
+MPRAGE_REP_GSS_REP_FLAT = 0.05   # Gss rephaser flat-top
+MPRAGE_REP_GSS_REP_AMP  = -0.45  # Gss rephaser amplitude
+MPRAGE_REP_GPE_RISE     = 0.04   # Gpe encode/rewind rise/fall
+MPRAGE_REP_GPE_FLAT     = 0.10   # Gpe encode/rewind flat-top
+MPRAGE_REP_GFE_DEP_RISE = 0.03   # Gfe dephase (prephase) rise/fall
+MPRAGE_REP_GFE_DEP_FLAT = 0.10   # Gfe dephase flat-top
+MPRAGE_REP_GFE_DEP_AMP  = -0.55  # Gfe dephase amplitude
+MPRAGE_REP_GFE_RO_RISE  = 0.04   # Gfe readout rise/fall
+MPRAGE_REP_GFE_RO_FLAT  = 0.18   # Gfe readout flat-top
+MPRAGE_REP_GFE_RO_AMP   = 1.00   # Gfe readout amplitude
+MPRAGE_REP_SPACING      = 1.15   # schematic spacing between successive RF centres (TR_readout)
+MPRAGE_PE_AMP_MAX       = 0.70   # Gpe amplitude at the k-space edge (sequential fill sweeps ±this)
+MPRAGE_N_SHOW           = 3      # explicit GRE-train repetitions drawn before "..."
+MPRAGE_DOTS_GAP         = 0.9    # extra schematic gap reserved for "..." before the final repetition
+MPRAGE_SIG_MIN          = 0.12   # signal amplitude just after inversion (near the T1-null point)
+MPRAGE_SIG_MAX          = 1.00   # signal amplitude once Mz has recovered toward equilibrium
+MPRAGE_SIG_HW           = 0.13   # echo envelope half-width (matches Gfe readout half-width)
+MPRAGE_RECOVERY_GAP_S   = 1.2    # schematic gap after the final repetition before the next inversion
+MPRAGE_XLIM_PAD         = 0.30   # x-axis padding beyond the next inversion pulse
+
 
 def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=240,
-                        epi_eff_idx=1, epi_n_readouts=64, TI2=0):
+                        epi_eff_idx=1, epi_n_readouts=64, TI2=0, Npartitions=176):
     """Return a matplotlib Figure with an oscilloscope-style pulse sequence
-    diagram for FSE, GRE, FLAIR, STIR, bSSFP, DIR, EPI.  Returns None for others."""
-    if seq not in ("FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "EPI (single-shot)"):
+    diagram for FSE, GRE, FLAIR, STIR, bSSFP, DIR, MPRAGE, EPI.  Returns None for others."""
+    if seq not in ("FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "MPRAGE", "EPI (single-shot)"):
         return None
 
     ROW_LABELS = ["RF", "Gss", "Gpe", "Gfe", "Signal"]
@@ -1172,6 +1207,131 @@ def draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=5, BW=200, FOV_read=2
 
         ann_tr(t_inv1, t_diagram_end, ax=ax_ss)
         axes[-1].set_xlim(0, t_diagram_end + DIR_XLIM_PAD)
+
+    # ================================================================
+    # MPRAGE — non-selective inversion + small-flip GRE-train readout
+    # ================================================================
+    elif seq == "MPRAGE":
+        # ── Schematic TI span: inversion centre → first GRE-train RF centre ──
+        ti_s   = MPRAGE_TI_MIN_S + (TI / TR) * (T_TOTAL - MPRAGE_TI_RANGE)
+        ti_s   = max(MPRAGE_TI_CLAMP_MIN, min(ti_s, MPRAGE_TI_CLAMP_MAX))
+        t_inv1 = MPRAGE_T_INV1
+        t_exc1 = t_inv1 + ti_s
+
+        # ── Non-selective 180° hard inversion pulse + simple non-selective Gss ──
+        rect_rf(ax_rf, t_inv1, 1.0, RF_HW_INV, label="180°")
+        _ns_gss_t0 = t_inv1 - DIR_NS_GSS_RISE - DIR_NS_GSS_FLAT / 2
+        trap(ax_ss, _ns_gss_t0, DIR_NS_GSS_RISE, DIR_NS_GSS_FLAT,
+             DIR_NS_GSS_RISE, DIR_NS_GSS_AMP, c_ss)
+
+        # ── Faint dotted vlines at t_inv1 (all rows) and t_exc1 ───────────────
+        for _vax in axes:
+            _vax.axvline(t_inv1, color="#555555", linewidth=VMARK_LINEWIDTH,
+                         linestyle=":", alpha=0.5)
+        _exc_peak_ymax = (1.0 - PSD_Y_MIN) / (PSD_Y_MAX - PSD_Y_MIN)
+        ax_rf.axvline(t_exc1, ymin=0, ymax=_exc_peak_ymax,
+                      color="#555555", linewidth=VMARK_LINEWIDTH, linestyle=":", alpha=0.5)
+        for _vax in (ax_ss, ax_pe, ax_fe, ax_sig):
+            _vax.axvline(t_exc1, color="#555555", linewidth=VMARK_LINEWIDTH,
+                         linestyle=":", alpha=0.5)
+
+        # ── One GRE-train repetition: small-flip sinc + Gss select/rephase +
+        # Gpe encode/rewind + Gfe dephase/readout — identical shape to the
+        # standalone GRE case, sized compact for a repeating train ───────────
+        rf_amp = MPRAGE_RF_AMP_MIN + MPRAGE_RF_AMP_PER_DEG * max(0, FA - 5)
+
+        def gre_rep(t0, pe_amp):
+            gss_t0       = t0 - MPRAGE_REP_RF_HW - MPRAGE_REP_GSS_RISE
+            gss_ss_end   = gss_t0 + MPRAGE_REP_GSS_RISE + MPRAGE_REP_GSS_FLAT + MPRAGE_REP_GSS_RISE
+            gss_rep_end  = (gss_ss_end + MPRAGE_REP_GSS_REP_RISE + MPRAGE_REP_GSS_REP_FLAT
+                            + MPRAGE_REP_GSS_REP_RISE)
+            gpe_hw       = MPRAGE_REP_GPE_RISE + MPRAGE_REP_GPE_FLAT / 2
+            gpe_enc_c    = gss_ss_end + gpe_hw
+            prep_w       = 2 * MPRAGE_REP_GFE_DEP_RISE + MPRAGE_REP_GFE_DEP_FLAT
+            gfe_ro_hw    = MPRAGE_REP_GFE_RO_RISE + MPRAGE_REP_GFE_RO_FLAT / 2
+            te_c         = gss_rep_end + prep_w + gfe_ro_hw
+            gfe_ro_start = te_c - gfe_ro_hw
+            gpe_rew_c    = 2 * te_c - gpe_enc_c
+            gpe_rew_t0   = gpe_rew_c - gpe_hw
+
+            sinc_rf(ax_rf, t0, rf_amp, MPRAGE_REP_RF_HW, label=f"{FA}°")
+            trap(ax_ss, gss_t0, MPRAGE_REP_GSS_RISE, MPRAGE_REP_GSS_FLAT,
+                 MPRAGE_REP_GSS_RISE, GRE_GSS_REF_AMP, c_ss)
+            trap(ax_ss, gss_ss_end, MPRAGE_REP_GSS_REP_RISE, MPRAGE_REP_GSS_REP_FLAT,
+                 MPRAGE_REP_GSS_REP_RISE, MPRAGE_REP_GSS_REP_AMP, c_ss)
+            trap(ax_pe, gpe_enc_c - gpe_hw, MPRAGE_REP_GPE_RISE, MPRAGE_REP_GPE_FLAT,
+                 MPRAGE_REP_GPE_RISE, pe_amp, c_pe)
+            trap(ax_pe, gpe_rew_t0, MPRAGE_REP_GPE_RISE, MPRAGE_REP_GPE_FLAT,
+                 MPRAGE_REP_GPE_RISE, -pe_amp, c_pe)
+            trap(ax_fe, gss_rep_end, MPRAGE_REP_GFE_DEP_RISE, MPRAGE_REP_GFE_DEP_FLAT,
+                 MPRAGE_REP_GFE_DEP_RISE, MPRAGE_REP_GFE_DEP_AMP, c_fe)
+            trap(ax_fe, gfe_ro_start, MPRAGE_REP_GFE_RO_RISE, MPRAGE_REP_GFE_RO_FLAT,
+                 MPRAGE_REP_GFE_RO_RISE, MPRAGE_REP_GFE_RO_AMP, c_fe)
+            rep_end = max(gfe_ro_start + 2 * MPRAGE_REP_GFE_RO_RISE + MPRAGE_REP_GFE_RO_FLAT,
+                          gpe_rew_t0 + 2 * MPRAGE_REP_GPE_RISE + MPRAGE_REP_GPE_FLAT)
+            return te_c, rep_end
+
+        # ── Sequential (linear) k-space fill: Gpe steps monotonically across
+        # the readout train — 3 repetitions shown near the start of the train,
+        # then the final repetition at the opposite k-space edge ─────────────
+        _n_steps = MPRAGE_N_SHOW + 1
+        echo_times   = []
+        rep_end_last = t_exc1
+        for i in range(MPRAGE_N_SHOW):
+            t0 = t_exc1 + i * MPRAGE_REP_SPACING
+            pe_amp = -MPRAGE_PE_AMP_MAX + 2 * MPRAGE_PE_AMP_MAX * i / (_n_steps - 1)
+            te_c, rep_end_last = gre_rep(t0, pe_amp)
+            echo_times.append(te_c)
+
+        # "..." continuation indicator
+        _dots_x = rep_end_last + MPRAGE_DOTS_GAP / 2
+        for _ax_d, _col_d in ((ax_rf, c_rf), (ax_ss, c_ss), (ax_pe, c_pe),
+                              (ax_fe, c_fe), (ax_sig, "#FFFFFF")):
+            _ax_d.text(_dots_x, 0.0, "· · ·", color=_col_d,
+                       fontsize=7, ha="center", va="center", fontstyle="italic")
+
+        # Final repetition — last partition-encode line acquired
+        t0_final = rep_end_last + MPRAGE_DOTS_GAP + MPRAGE_REP_RF_HW + MPRAGE_REP_GSS_RISE
+        te_final, rep_end_final = gre_rep(t0_final, MPRAGE_PE_AMP_MAX)
+        echo_times.append(te_final)
+
+        # ── Signal: gradient echoes under each GRE readout — T1-weighted
+        # amplitude reflecting Mz recovery after the inversion ────────────────
+        _tau_sig = max(ti_s, 0.5)
+        for _te in echo_times:
+            _sig_amp = MPRAGE_SIG_MIN + (MPRAGE_SIG_MAX - MPRAGE_SIG_MIN) * (
+                1 - np.exp(-(_te - t_inv1) / _tau_sig))
+            grad_echo(ax_sig, _te, min(_sig_amp, MPRAGE_SIG_MAX), MPRAGE_SIG_HW)
+
+        # ── Annotations ──────────────────────────────────────────────────────
+        # TI: inversion pulse centre → first GRE pulse centre
+        ann_ti(t_inv1, t_exc1)
+
+        # TR_readout: one GRE-train repetition (first RF centre → second RF centre)
+        _tr_ro_end = t_exc1 + MPRAGE_REP_SPACING
+        ax_pe.annotate("", xy=(_tr_ro_end, ANN_TR_Y), xytext=(t_exc1, ANN_TR_Y),
+                       arrowprops=dict(arrowstyle="<->", color=c_pe, lw=ARROW_LINEWIDTH))
+        ax_pe.text((t_exc1 + _tr_ro_end) / 2, ANN_TR_Y + ANN_TR_LABEL_OFF,
+                   f"TR_readout = {MPRAGE_TR_READOUT} ms", color=c_pe,
+                   fontsize=FONT_ANN, ha="center", va="bottom")
+
+        # TR_total: inversion pulse centre → next inversion pulse centre
+        t_inv2 = rep_end_final + MPRAGE_RECOVERY_GAP_S
+        ann_tr(t_inv1, t_inv2, ax=ax_ss)
+        for _vax in axes:
+            _vax.axvline(t_inv2, color="#555555", linewidth=VMARK_LINEWIDTH,
+                         linestyle=":", alpha=0.5)
+        rect_rf(ax_rf, t_inv2, GRE_GHOST_AMP, RF_HW_INV, col=c_rf + "55")
+        trap(ax_ss, t_inv2 - DIR_NS_GSS_RISE - DIR_NS_GSS_FLAT / 2, DIR_NS_GSS_RISE,
+             DIR_NS_GSS_FLAT, DIR_NS_GSS_RISE, DIR_NS_GSS_AMP, c_ss + "44")
+
+        if Npartitions > MPRAGE_N_SHOW + 1:
+            fig.text(0.67, 0.95,
+                     f"(Showing 4 of {Npartitions} partition-encode readouts)",
+                     color="white", fontsize=FONT_TITLE, fontweight="bold",
+                     ha="left", va="top")
+
+        axes[-1].set_xlim(0, t_inv2 + MPRAGE_XLIM_PAD)
 
     # ================================================================
     # bSSFP  — 3 TR repetitions, all gradient moments balanced to zero
@@ -1873,7 +2033,6 @@ with st.sidebar:
         TE  = st.slider("TE (ms)",          2,    18, _preset.get("TE", 3),  1)
         FA  = st.slider("Flip Angle (°)",   5,   15, _preset.get("FA", 9),  1)
         ETL = 1
-        MPRAGE_TR_READOUT = 7  # ms — fixed gradient echo spacing within partition train
 
     else:  # EPI (single-shot)
         TE  = st.slider("TEeff (ms)", 1, 200, _preset.get("TE", 30), 1)
@@ -2302,7 +2461,8 @@ if seq == "EPI (single-shot)":
 
 # --- Pulse sequence diagram (between phantom images and signal bars) ---
 _psd_fig = draw_pulse_sequence(seq, TR, TE, TI, FA, ETL, slice_mm=slice_mm, BW=BW, FOV_read=FOV_read,
-                               epi_eff_idx=_epi_eff_idx, epi_n_readouts=phase_matrix, TI2=TI2)
+                               epi_eff_idx=_epi_eff_idx, epi_n_readouts=phase_matrix, TI2=TI2,
+                               Npartitions=Npartitions)
 if _psd_fig is not None:
     st.pyplot(_psd_fig, use_container_width=True)
     plt.close(_psd_fig)
