@@ -1915,6 +1915,19 @@ with st.sidebar:
     )
     _tr_max = TR_MAX_BY_FIELD[field_strength]
 
+    st.markdown("**Tissue Properties**")
+    _fs_ref_tissues = FIELD_STRENGTH_TISSUES[field_strength]
+    _tissue_ref_rows = "\n".join(
+        f"| {_name} | {_fs_ref_tissues[_name]['T1']} | {_fs_ref_tissues[_name]['T2']} |"
+        for _name in ("WM", "GM", "CSF", "Fat")
+    )
+    st.markdown(
+        f"| Tissue | T1 (ms) | T2 (ms) |\n"
+        f"|---|---|---|\n"
+        f"{_tissue_ref_rows}"
+    )
+    st.caption(f"Values at {field_strength} — Rooney et al. (2007) and Bottomley et al. (1984)")
+
     st.markdown("**Sequence**")
     _seq_options = ["FSE", "GRE", "FLAIR", "STIR", "bSSFP", "DIR", "DWI", "MPRAGE", "EPI (single-shot)"]
     seq = st.radio(
