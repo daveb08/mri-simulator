@@ -1,4 +1,6 @@
 streamlit==1.55.0
+streamlit-image-coordinates==0.4.0
+pillow==12.3.0
 numpy==2.4.2
 matplotlib==3.10.8
 anthropic==0.84.0

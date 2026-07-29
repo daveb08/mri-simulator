@@ -10,8 +10,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.transforms as mtransforms
 import streamlit as st
+from streamlit_image_coordinates import streamlit_image_coordinates
 import anthropic
 from scipy.ndimage import gaussian_filter
+from io import BytesIO
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Page config — must be first Streamlit call
@@ -2247,9 +2250,22 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Slice Position")
     st.caption("red = sagittal (X) · green = coronal (Y) · blue = axial (Z)")
-    x_pos = st.slider("X  (Sagittal)", 0, 361, 181, 1)
-    y_pos = st.slider("Y  (Coronal)",  0, 433, 217, 1)
-    z_pos = st.slider("Z  (Axial)",    0, 361, 181, 1)
+    st.caption("Click anywhere on a phantom image below to move the crosshair.")
+    # A click on one of the phantom images (Row 1, below) stashes its target
+    # slice indices in "_pending_slice_update" and triggers a rerun. A widget's
+    # session_state value can only be changed on the run *before* the widget is
+    # instantiated, so that pending update must be applied here, before the
+    # sliders below are created.
+    _pending_slice = st.session_state.pop("_pending_slice_update", None)
+    if _pending_slice:
+        for _pk, _pv in _pending_slice.items():
+            st.session_state[_pk] = _pv
+    st.session_state.setdefault("x_pos", 181)
+    st.session_state.setdefault("y_pos", 217)
+    st.session_state.setdefault("z_pos", 181)
+    x_pos = st.slider("X  (Sagittal)", 0, 361, step=1, key="x_pos")
+    y_pos = st.slider("Y  (Coronal)",  0, 433, step=1, key="y_pos")
+    z_pos = st.slider("Z  (Axial)",    0, 361, step=1, key="z_pos")
 
     _cur_slice = (x_pos, y_pos, z_pos)
     if st.session_state.ga4_prev_slice != (None, None, None) and _cur_slice != st.session_state.ga4_prev_slice:
@@ -2422,15 +2438,24 @@ half_w_read  = 128.0 * FOV_read  / FOV_MAX   # half-width  in image-px for read 
 half_h_phase = 128.0 * FOV_phase / FOV_MAX   # half-height in image-px for phase direction
 # Number of phantom rows the phase FOV covers (for aliasing calculation)
 n_phase_rows = max(1, round(256 * FOV_phase / FOV_MAX))
+# row_key/row_max and col_key/col_max identify which slice-position slider
+# (and its max index) each image axis controls, so a click on the image can be
+# inverted back into a slider update. This is the exact inverse of the
+# crosshair_row/col display formulas: row uses the "255 - v/max*255" flip
+# (see the np.flipud note above), column uses the plain "v/max*255" mapping.
 plane_configs = [
-    # (name, slice_idx, crosshair_row_display, crosshair_col_display, hcolor, vcolor)
-    ("Axial",    z_pos, 255 - y_pos/433*255, x_pos/361*255, "#44FF44", "#FF4444"),
-    ("Coronal",  y_pos, 255 - z_pos/361*255, x_pos/361*255, "#4488FF", "#FF4444"),
-    ("Sagittal", x_pos, 255 - z_pos/361*255, y_pos/433*255, "#4488FF", "#44FF44"),
+    # (name, slice_idx, crosshair_row_display, crosshair_col_display, hcolor, vcolor,
+    #  row_key, row_max, col_key, col_max)
+    ("Axial",    z_pos, 255 - y_pos/433*255, x_pos/361*255, "#44FF44", "#FF4444",
+     "y_pos", 433, "x_pos", 361),
+    ("Coronal",  y_pos, 255 - z_pos/361*255, x_pos/361*255, "#4488FF", "#FF4444",
+     "z_pos", 361, "x_pos", 361),
+    ("Sagittal", x_pos, 255 - z_pos/361*255, y_pos/433*255, "#4488FF", "#44FF44",
+     "z_pos", 361, "y_pos", 433),
 ]
 
 col_ax, col_cor, col_sag = st.columns(3)
-for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
+for col, (plane_name, idx, ch_y, ch_x, hcol, vcol, row_key, row_max, col_key, col_max) in zip(
         [col_ax, col_cor, col_sag], plane_configs):
     ph  = get_phantom_slice(plane_name, idx)
     img = sig_lookup[ph].copy()
@@ -2501,7 +2526,52 @@ for col, (plane_name, idx, ch_y, ch_x, hcol, vcol) in zip(
                   transform=ax_p.transAxes, ha="center", va="bottom",
                   color="white", fontsize=5,
                   bbox=dict(facecolor="black", alpha=0.5, edgecolor="none", pad=1))
-        st.pyplot(fig_p, use_container_width=True)
+
+        # Render to an in-memory PNG (rather than st.pyplot) so the exact same
+        # raster can be handed to streamlit_image_coordinates for click capture.
+        fig_p.canvas.draw()
+        _png_buf = BytesIO()
+        fig_p.savefig(_png_buf, format="png", dpi=fig_p.dpi,
+                      facecolor=fig_p.get_facecolor())
+        _png_buf.seek(0)
+        _pil_img = Image.open(_png_buf)
+        _nat_w, _nat_h = _pil_img.size
+
+        _click = streamlit_image_coordinates(
+            _pil_img, use_column_width=True, key=f"phantom_click_{plane_name}",
+        )
+
+        if _click is not None:
+            # (x, y) are relative to the *displayed* image size (which
+            # use_column_width may have scaled up/down from the natural PNG
+            # size) — rescale back to natural pixel coordinates first.
+            _disp_w = _click.get("width")  or _nat_w
+            _disp_h = _click.get("height") or _nat_h
+            _click_pt = (round(_click["x"] * _nat_w / _disp_w),
+                         round(_click["y"] * _nat_h / _disp_h))
+            _last_click_key = f"_last_phantom_click_{plane_name}"
+            if st.session_state.get(_last_click_key) != _click_pt:
+                # A genuinely new click (not just the component replaying its
+                # last value on an unrelated rerun) — process it once.
+                st.session_state[_last_click_key] = _click_pt
+                # Undo the top-left-origin/DOM pixel space back into
+                # matplotlib's bottom-left-origin display space, then invert
+                # through this axes' transData to get image-index (data)
+                # coordinates — the exact reverse of the crosshair placement.
+                _disp_x = _click_pt[0]
+                _disp_y = _nat_h - _click_pt[1]
+                _data_x, _data_y = ax_p.transData.inverted().transform((_disp_x, _disp_y))
+                _new_row = int(round((255 - _data_y) * row_max / 255))
+                _new_col = int(round(_data_x * col_max / 255))
+                _new_row = min(max(_new_row, 0), row_max)
+                _new_col = min(max(_new_col, 0), col_max)
+                _pending_update = dict(st.session_state.get("_pending_slice_update", {}))
+                _pending_update[row_key] = _new_row
+                _pending_update[col_key] = _new_col
+                st.session_state["_pending_slice_update"] = _pending_update
+                plt.close(fig_p)
+                st.rerun()
+
         plt.close(fig_p)
 
 # EPI N/2 ghost educational caption below the three-plane display
