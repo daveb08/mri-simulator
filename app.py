@@ -113,6 +113,37 @@ FIELD_STRENGTH_TISSUES = {
         "CSF": {"T1": 4000, "T2": 2000, "T2s": 500},
         "Fat": {"T1": 365,  "T2": 60,   "T2s": 17},
     },
+    # ── Ultra-high-field entries ──────────────────────────────────────────
+    # T1: Rooney et al., Magn. Reson. Med. 57(2), 2007 — empirical power-law fits
+    #   T1_WM = 0.583 × B0^0.382,  T1_GM = 0.857 × B0^0.376  (B0 in T, T1 in s)
+    # T2: de Graaf et al., Magn. Reson. Med. 56(2), 2006 — field-dependent T2 trend
+    # T2* is not tabulated in those references. As at low field, it is estimated
+    # as min(T2, T2s_3T × (3.0 / B0)), reflecting increasing susceptibility
+    # broadening (T2* shrinking faster than T2) as B0 rises above 3 T.
+    "4.7T": {
+        "WM":  {"T1": 1050, "T2": 55,  "T2s": 17},   # min(55,  26×3/4.7=17)
+        "GM":  {"T1": 1750, "T2": 60,  "T2s": 21},   # min(60,  33×3/4.7=21)
+        "CSF": {"T1": 4500, "T2": 400, "T2s": 319},  # min(400, 500×3/4.7=319)
+        "Fat": {"T1": 400,  "T2": 40,  "T2s": 11},   # min(40,  17×3/4.7=11)
+    },
+    "7.0T": {
+        "WM":  {"T1": 1126, "T2": 45,  "T2s": 11},   # min(45,  26×3/7.0=11)
+        "GM":  {"T1": 1939, "T2": 50,  "T2s": 14},   # min(50,  33×3/7.0=14)
+        "CSF": {"T1": 4500, "T2": 350, "T2s": 214},  # min(350, 500×3/7.0=214)
+        "Fat": {"T1": 500,  "T2": 35,  "T2s": 7},    # min(35,  17×3/7.0=7)
+    },
+    "9.4T": {
+        "WM":  {"T1": 1280, "T2": 35,  "T2s": 8},    # min(35,  26×3/9.4=8)
+        "GM":  {"T1": 2200, "T2": 40,  "T2s": 11},   # min(40,  33×3/9.4=11)
+        "CSF": {"T1": 4500, "T2": 300, "T2s": 160},  # min(300, 500×3/9.4=160)
+        "Fat": {"T1": 550,  "T2": 28,  "T2s": 5},    # min(28,  17×3/9.4=5)
+    },
+    "11.7T": {
+        "WM":  {"T1": 1420, "T2": 28,  "T2s": 7},    # min(28,  26×3/11.7=7)
+        "GM":  {"T1": 2450, "T2": 32,  "T2s": 8},    # min(32,  33×3/11.7=8)
+        "CSF": {"T1": 4500, "T2": 250, "T2s": 128},  # min(250, 500×3/11.7=128)
+        "Fat": {"T1": 600,  "T2": 22,  "T2s": 4},    # min(22,  17×3/11.7=4)
+    },
 }
 
 # SNR scales approximately linearly with B0 (for a given coil / bandwidth).
@@ -123,10 +154,16 @@ FIELD_SNR_SCALE = {
     "1.0T":   0.333,
     "1.5T":   0.500,
     "3.0T":   1.000,
+    "4.7T":   1.567,   # 4.7 / 3.0
+    "7.0T":   2.333,   # 7.0 / 3.0
+    "9.4T":   3.133,   # 9.4 / 3.0
+    "11.7T":  3.900,   # 11.7 / 3.0
 }
 
 # Maximum clinically useful TR per field strength.
 # T1 values shorten at lower B0, so very long TRs add no contrast benefit.
+# T1 values lengthen again at ultra-high field (Rooney et al. MRM 2007), so TR
+# ceilings rise accordingly for 4.7 T and above.
 # These values set both the TR slider ceiling and the T1 recovery curve x-axis limit.
 TR_MAX_BY_FIELD = {
     "0.064T": 1000,
@@ -134,6 +171,10 @@ TR_MAX_BY_FIELD = {
     "1.0T":   3000,
     "1.5T":   4000,
     "3.0T":   6000,
+    "4.7T":   8000,
+    "7.0T":   10000,
+    "9.4T":   12000,
+    "11.7T":  15000,
 }
 
 SNR_SCALE = 200.0
@@ -1864,7 +1905,7 @@ with st.sidebar:
         st.session_state._last_protocol_preset = protocol_name
 
     st.markdown("**Field Strength**")
-    _field_options = ["0.064T", "0.5T", "1.0T", "1.5T", "3.0T"]
+    _field_options = ["0.064T", "0.5T", "1.0T", "1.5T", "3.0T", "4.7T", "7.0T", "9.4T", "11.7T"]
     field_strength = st.radio(
         "",
         _field_options,
@@ -2814,7 +2855,7 @@ Write at a level suitable for a radiology resident or MRI student. Be concise an
         try:
             client = anthropic.Anthropic(api_key=api_key)
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )
